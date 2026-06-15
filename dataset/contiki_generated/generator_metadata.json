@@ -1,0 +1,59 @@
+{
+  "dataset": "SisFall_dataset",
+  "units": {
+    "ADXL345": "milli-g",
+    "ITG3200": "deg/s",
+    "MMA8451Q": "milli-g"
+  },
+  "conversions": {
+    "ADXL345_mg_per_raw_bit": 3.90625,
+    "ITG3200_deg_s_per_raw_bit": 0.06103515625,
+    "MMA8451Q_mg_per_raw_bit": 0.9765625
+  },
+  "normal_generation": {
+    "method": "quantile_bins",
+    "quantiles": [
+      1,
+      10,
+      25,
+      50,
+      75,
+      90,
+      99
+    ],
+    "sampling_rule": {
+      "central_p25_p75": 0.6,
+      "medium_p10_p90": 0.25,
+      "tail_p01_p99": 0.15
+    },
+    "files_used": 2707
+  },
+  "fall_generation": {
+    "method": "real_fall_templates_plus_noise",
+    "num_templates": 8,
+    "template_len": 20,
+    "pre_seconds": 1.5,
+    "post_seconds": 2.0,
+    "sample_rate_hz": 200,
+    "selected_templates": [
+      "F13_SA09_R02.txt",
+      "F14_SA04_R04.txt",
+      "F12_SA21_R01.txt",
+      "F12_SA05_R03.txt",
+      "F01_SA11_R02.txt",
+      "F06_SA16_R01.txt",
+      "F02_SA19_R02.txt",
+      "F05_SA05_R04.txt"
+    ],
+    "files_used": 1798,
+    "noise": {
+      "accelerometers_mg": 30,
+      "gyroscope_deg_s": 5
+    }
+  },
+  "generated_files": [
+    "patient_data_generator.h",
+    "patient_data_generator.c",
+    "generator_metadata.json"
+  ]
+}
