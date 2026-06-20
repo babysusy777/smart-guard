@@ -1,0 +1,17 @@
+{
+  "threshold": 3.434024347660408,
+  "target_recall": 0.99,
+  "fall_recall": 0.99975,
+  "fall_precision_on_synthetic_mix": 1.0,
+  "normal_specificity": 1.0,
+  "normal_false_positive_rate": 0.0,
+  "f1_on_synthetic_mix": 0.9998749843730466,
+  "true_positive": 3999,
+  "false_negative": 1,
+  "false_positive": 0,
+  "true_negative": 10000,
+  "train_variants_per_template": 2000,
+  "validation_variants_per_template": 500,
+  "normal_test_windows": 10000,
+  "random_seed": 42
+}
