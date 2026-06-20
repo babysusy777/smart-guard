@@ -5,6 +5,8 @@ import json
 import time
 import aiocoap
 from influxdb_client import InfluxDBClient
+from influxdb_client import InfluxDBClient, Point
+from influxdb_client.client.write_api import SYNCHRONOUS
 
 TOKEN  = "-dDRkdv-5FuOWXeJSpnVr_gjHKrhGw2CyYp-MezlwAyIU5cwKbaQKyPV5--0hRj0kZHJ8W_cXymV6JaB_vBo6g=="
 ORG    = "myorg"
@@ -12,6 +14,7 @@ BUCKET = "iot_health"
 URL    = "http://localhost:8086"
 
 influx_client = InfluxDBClient(url=URL, token=TOKEN, org=ORG)
+write_api = influx_client.write_api(write_options=SYNCHRONOUS)
 query_api = influx_client.query_api()
 
 #rate adaptation parameters
@@ -45,6 +48,12 @@ def get_registered_nodes():
         for record in table.records:
             result[record.values.get("node_id")] = record.get_value()
     return result
+
+
+#used by failure_detection to understand actual rate
+def write_config_rate(node_id, rate):
+    point = Point("config").tag("node_id", node_id).field("rate", rate)
+    write_api.write(bucket=BUCKET, org=ORG, record=point)
 
 
 #counts how many heartbeat were written for this node_id in the last WINDOW_SECONDS
@@ -107,6 +116,7 @@ async def initialize_node_state():
     for node_id, ip_address in nodes.items():
         rate = await coap_get_config(ip_address)
         node_state[node_id] = {"ip": ip_address, "rate": rate}
+        write_config_rate(node_id, rate)
         print(f"[CoAP_actuator] Discovered {node_id} ({ip_address}): rate={rate}s")
 
 
@@ -118,6 +128,7 @@ async def check_congestion_once():
         if node_id not in node_state:
             rate = await coap_get_config(ip_address)
             node_state[node_id] = {"ip": ip_address, "rate": rate}
+            write_config_rate(node_id, rate) 
 
     for node_id, state in node_state.items():
         expected = WINDOW_SECONDS / state["rate"]
@@ -132,6 +143,7 @@ async def check_congestion_once():
                       f"(ratio={ratio:.2f}). Raising rate {state['rate']}s -> {new_rate}s")
                 await coap_put_config(state["ip"], new_rate)
                 state["rate"] = new_rate
+                write_config_rate(node_id, new_rate) 
             else:
                 #no congestions are present, so if the rate is over the default we reduce it 
                 if state["rate"] > DEFAULT_RATE_SECONDS:
@@ -140,6 +152,7 @@ async def check_congestion_once():
                         f"(ratio={ratio:.2f}). Lowering rate {state['rate']}s -> {new_rate}s")
                     await coap_put_config(state["ip"], new_rate)
                     state["rate"] = new_rate
+                    write_config_rate(node_id, new_rate) 
 
 
 async def main():

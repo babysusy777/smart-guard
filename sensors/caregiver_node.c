@@ -78,6 +78,12 @@ static unsigned long connecting_ticks = 0;
 static unsigned long publish_counter = 0;
 static unsigned long publish_every_n_ticks = CAREGIVER_DEFAULT_PUBLISH_INTERVAL / STATE_MACHINE_PERIODIC;
 
+#define MAX_COAP_REG_ATTEMPTS 3
+#define COAP_REG_RETRY_INTERVAL (5 * CLOCK_SECOND)
+
+static uint8_t coap_registered = 0;
+static uint8_t coap_registration_attempts = 0;
+
 extern coap_resource_t res_config;
  
 //returns actual rate for heartbeats publication
@@ -296,7 +302,6 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
 
   case MQTT_EVENT_DISCONNECTED:
     LOG_INFO("MQTT disconnected. Reason %u\n", *((mqtt_event_t *)data));
-    state = STATE_DISCONNECTED;
     enter_reconnect_or_manual_restart();
     process_poll(&caregiver_process);
     break;
@@ -355,11 +360,14 @@ static void client_chunk_handler(coap_message_t *response) {
 
   if(response == NULL) {
     LOG_INFO("Registration: timeout\n");
+    coap_registered = 0;
     return;
   }
 
   len = coap_get_payload(response, &chunk);
   LOG_INFO("Registration response: %.*s\n", len, (char *)chunk);
+
+  coap_registered = 1;
 }
 
 
@@ -372,39 +380,82 @@ PROCESS_THREAD(caregiver_process, ev, data)
 
   coap_activate_resource(&res_config, "config"); 
 
-  //client_id from MAC address - node identity
-  snprintf(client_id, BUFFER_SIZE, "%02x%02x%02x%02x%02x%02x",
-           linkaddr_node_addr.u8[0], linkaddr_node_addr.u8[1],
-           linkaddr_node_addr.u8[2], linkaddr_node_addr.u8[5],
-           linkaddr_node_addr.u8[6], linkaddr_node_addr.u8[7]);
+  // Client_id from MAC address 
+  snprintf(client_id, BUFFER_SIZE, "%02x%02x%02x%02x%02x%02x", linkaddr_node_addr.u8[0], linkaddr_node_addr.u8[1], linkaddr_node_addr.u8[2], linkaddr_node_addr.u8[5],linkaddr_node_addr.u8[6], linkaddr_node_addr.u8[7]);
 
   LOG_INFO("Caregiver node process started (%s)\n", client_id);
 
   snprintf(heartbeat_topic, TOPIC_BUFFER_SIZE, "health/%s/heartbeat", client_id);
 
-  //wait for connectivity before attempting coap registration
+  // Bootstrap 
+  //The node waits for IPv6/RPL connectivity before attempting CoAP registration
+
   while(!have_connectivity()) {
+    LOG_INFO("Waiting for IPv6/RPL connectivity before CoAP registration\n");
     PROCESS_PAUSE();
   }
 
-  //coap registration - blocking, done once at boot before starting MQTT
-  coap_endpoint_parse(REGISTRATION_SERVER_EP, strlen(REGISTRATION_SERVER_EP), &server_ep);
+  // CoAP registration 
+  // The registration is blocking, but only during bootstrap
+  // and the node will start MQTT only after successful CoAP registration
+  
+  while(!coap_registered && coap_registration_attempts < MAX_COAP_REG_ATTEMPTS) {
 
-  coap_init_message(request, COAP_TYPE_CON, COAP_POST, 0);
-  coap_set_header_uri_path(request, REGISTRATION_PATH);
+    if(!have_connectivity()) {
+      LOG_INFO("IPv6/RPL connectivity lost before CoAP registration. Waiting...\n");
 
-  snprintf(app_buffer, APP_BUFFER_SIZE,
-           "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"protocol\":\"mqtt\"}", client_id);
-  coap_set_payload(request, (uint8_t *)app_buffer, strlen(app_buffer));
+      etimer_set(&periodic_timer, COAP_REG_RETRY_INTERVAL);
+      PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&periodic_timer));
 
-  COAP_BLOCKING_REQUEST(&server_ep, request, client_chunk_handler);
+      continue;
+    }
 
-  //activate MQTT
+    coap_registration_attempts++;
+
+    LOG_INFO("Trying CoAP registration, attempt %u/%u\n",coap_registration_attempts, MAX_COAP_REG_ATTEMPTS);
+
+    // Build CoAP registration request   
+    coap_endpoint_parse(REGISTRATION_SERVER_EP, strlen(REGISTRATION_SERVER_EP), &server_ep);
+
+    coap_init_message(request, COAP_TYPE_CON, COAP_POST, 0);
+    coap_set_header_uri_path(request, REGISTRATION_PATH);
+
+    snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"protocol\":\"mqtt\"}", client_id);
+
+    coap_set_payload(request, (uint8_t *)app_buffer, strlen(app_buffer));
+
+    COAP_BLOCKING_REQUEST(&server_ep, request, client_chunk_handler);
+
+    if(!coap_registered) {
+      LOG_INFO("CoAP registration failed. Retrying in %u seconds...\n",
+               (unsigned int)(COAP_REG_RETRY_INTERVAL / CLOCK_SECOND));
+
+      etimer_set(&periodic_timer, COAP_REG_RETRY_INTERVAL);
+      PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&periodic_timer));
+    }
+  }
+
+  if(!coap_registered) {
+    LOG_ERR("CoAP registration failed after %u attempts\n",
+            MAX_COAP_REG_ATTEMPTS);
+
+    LOG_ERR("Unable to connect to the server: check your connection and switch caregiver node OFF and ON\n");
+
+    while(1) {
+      PROCESS_YIELD();
+    }
+  }
+
+  LOG_INFO("CoAP registration completed. Starting MQTT\n");
+
+  // Activate MQTT only after successful CoAP registration
+
   mqtt_register(&conn, &caregiver_process, client_id, mqtt_event, MAX_TCP_SEGMENT_SIZE);
 
   state = STATE_INIT;
+
   etimer_set(&periodic_timer, STATE_MACHINE_PERIODIC);
-  etimer_set(&blink_timer, ALARM_BLINK_PERIOD); 
+  etimer_set(&blink_timer, ALARM_BLINK_PERIOD);
 
   while(1) {
     PROCESS_YIELD();
@@ -454,7 +505,7 @@ PROCESS_THREAD(caregiver_process, ev, data)
 
       if(state == STATE_NET_OK) {
         LOG_INFO("Connecting to MQTT broker\n");
-        memcpy(broker_address, broker_ip, strlen(broker_ip));
+        snprintf(broker_address, CONFIG_IP_ADDR_STR_LEN, "%s", broker_ip);
 
         mqtt_connect(&conn, broker_address, DEFAULT_BROKER_PORT,
                       (DEFAULT_PUBLISH_INTERVAL * 3) / CLOCK_SECOND,
@@ -468,6 +519,7 @@ PROCESS_THREAD(caregiver_process, ev, data)
         if(connecting_ticks >= CONNECTING_TIMEOUT_INTERVAL) {
           LOG_ERR("MQTT connecting timeout\n");
           mqtt_disconnect(&conn);
+          connecting_ticks = 0;
           enter_reconnect_or_manual_restart();
         }
       }

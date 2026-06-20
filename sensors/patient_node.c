@@ -38,6 +38,7 @@ static const char *broker_ip = MQTT_CLIENT_BROKER_IP_ADDR;
 #define TOPIC_BUFFER_SIZE 96 
 #define APP_BUFFER_SIZE 512
 
+
 static char client_id[BUFFER_SIZE];
 static char heartbeat_topic[TOPIC_BUFFER_SIZE];
 static char alarm_topic[TOPIC_BUFFER_SIZE];
@@ -73,7 +74,6 @@ static uint8_t alarm_grace_ticks = 0;
 #define SLOW_RECONNECT_INTERVAL (60 * CLOCK_SECOND)/(STATE_MACHINE_PERIODIC) 
 #define CONNECTING_TIMEOUT_INTERVAL (20 * CLOCK_SECOND)/(STATE_MACHINE_PERIODIC)
 
-
 #define STATE_MACHINE_PERIODIC (CLOCK_SECOND >> 1)
 static struct etimer periodic_timer;
 
@@ -83,6 +83,19 @@ static struct etimer sampling_timer;
 //CoAP registration
 #define REGISTRATION_SERVER_EP "coap://[fd00::1]:5683"
 #define REGISTRATION_PATH "/registration"
+
+// Coap Registration Logic
+#define MAX_COAP_REG_ATTEMPTS 3
+#define COAP_REG_RETRY_INTERVAL (5 * CLOCK_SECOND)
+
+static uint8_t coap_registered = 0;
+static uint8_t coap_registration_attempts = 0;
+
+#define ALARM_SPEEDUP_FACTOR 60 //alarm interval becomes equal to publish_every_n_ticks / FACTOR 
+//FACTOR is sent by cloud application to regulate the congestion
+
+// Resource CoAP /config
+extern coap_resource_t res_config;
 
 //patient status                                        
 typedef enum {
@@ -105,9 +118,6 @@ static uint8_t window_full = 0;
 static uint8_t force_fall_sequence = 0;  // 0 NORMAL, 1 FALL
 static uint8_t alarm_active = 0;
 
-// Resource CoAP /config
-extern coap_resource_t res_config;
-
 PROCESS(patient_node_process, "Patient node");
 AUTOSTART_PROCESSES(&patient_node_process);
 
@@ -118,6 +128,11 @@ static bool have_connectivity(void) {
     return false;
   }
   return true;
+}
+
+static unsigned long get_alarm_interval_ticks(void) {
+  unsigned long ticks = publish_every_n_ticks / ALARM_SPEEDUP_FACTOR;
+  return (ticks < 1) ? 1 : ticks;
 }
 
 static patient_state_t check_patient_status(void) {
@@ -196,7 +211,6 @@ static void pub_handler(const char *topic, uint16_t topic_len, const uint8_t *ch
 //QoS is set to 0 since we are publishing periodic heartbits for communiting that the node is still alive
 static void publish_heartbeat(void) {
   const char *state_str = (patient_state == PATIENT_FALL) ? "FALL" : "NORMAL";
-
   snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"state\":\"%s\"}", client_id, state_str);
   mqtt_publish(&conn, NULL, heartbeat_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 }
@@ -279,17 +293,18 @@ static void client_chunk_handler(coap_message_t *response) {
   //response did not arrive within the timeout
   if(response == NULL) {
     LOG_INFO("Registration: timeout\n");
+    coap_registered = 0;
     return;
   }
 
   //othrwise we print the response (debug/logging)
   len = coap_get_payload(response, &chunk);
   LOG_INFO("Registration response: %.*s\n", len, (char *)chunk);
+  coap_registered = 1;
 }
 
 
-PROCESS_THREAD(patient_node_process, ev, data)
-{
+PROCESS_THREAD(patient_node_process, ev, data) {
   coap_endpoint_t server_ep;
   static coap_message_t request[1];
 
@@ -297,7 +312,8 @@ PROCESS_THREAD(patient_node_process, ev, data)
 
   coap_activate_resource(&res_config, "config");
 
-  //client_id dal MAC address - node identity
+
+  // Build client_id used in MQTT topics and CoAP registration from MAC address.
   snprintf(client_id, BUFFER_SIZE, "%02x%02x%02x%02x%02x%02x",
            linkaddr_node_addr.u8[0], linkaddr_node_addr.u8[1],
            linkaddr_node_addr.u8[2], linkaddr_node_addr.u8[5],
@@ -305,32 +321,80 @@ PROCESS_THREAD(patient_node_process, ev, data)
 
   LOG_INFO("Patient node process started (%s)\n", client_id);
 
-  //topics based on client_id
+
+  // Topics based on client_id
   snprintf(heartbeat_topic, TOPIC_BUFFER_SIZE, "health/%s/heartbeat", client_id);
   snprintf(alarm_topic, TOPIC_BUFFER_SIZE, "alarm/%s", client_id);
   snprintf(ack_topic, TOPIC_BUFFER_SIZE, "alarm/%s/ack", client_id);
 
-  //wait for connection before attempting mqtt registration
+  
+  // Bootstrap 
+  //The node waits for IPv6/RPL connectivity before attempting CoAP registration
+
   while(!have_connectivity()) {
+    LOG_INFO("Waiting for IPv6/RPL connectivity before CoAP registration\n");
     PROCESS_PAUSE();
   }
 
-  //coap registration - blocking
-  coap_endpoint_parse(REGISTRATION_SERVER_EP, strlen(REGISTRATION_SERVER_EP), &server_ep);
+  // CoAP registration 
+  // The registration is blocking, but only during bootstrap
+  // and the node will start MQTT only after successful CoAP registration
+  
+  while(!coap_registered && coap_registration_attempts < MAX_COAP_REG_ATTEMPTS) {
 
-  coap_init_message(request, COAP_TYPE_CON, COAP_POST, 0);
-  coap_set_header_uri_path(request, REGISTRATION_PATH);
+    if(!have_connectivity()) {
+      LOG_INFO("IPv6/RPL connectivity lost before CoAP registration. Waiting...\n");
 
-  snprintf(app_buffer, APP_BUFFER_SIZE,
-           "{\"node_id\":\"%s\",\"type\":\"patient\",\"protocol\":\"mqtt\"}", client_id);
-  coap_set_payload(request, (uint8_t *)app_buffer, strlen(app_buffer));
+      etimer_set(&periodic_timer, COAP_REG_RETRY_INTERVAL);
+      PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&periodic_timer));
 
-  COAP_BLOCKING_REQUEST(&server_ep, request, client_chunk_handler);
+      continue;
+    }
 
-  //activate MQTT and periodic sampling
+    coap_registration_attempts++;
+
+    LOG_INFO("Trying CoAP registration, attempt %u/%u\n",coap_registration_attempts, MAX_COAP_REG_ATTEMPTS);
+
+    // Build CoAP registration request   
+    coap_endpoint_parse(REGISTRATION_SERVER_EP, strlen(REGISTRATION_SERVER_EP), &server_ep);
+
+    coap_init_message(request, COAP_TYPE_CON, COAP_POST, 0);
+    coap_set_header_uri_path(request, REGISTRATION_PATH);
+
+    snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"protocol\":\"mqtt\"}", client_id);
+
+    coap_set_payload(request, (uint8_t *)app_buffer, strlen(app_buffer));
+
+    COAP_BLOCKING_REQUEST(&server_ep, request, client_chunk_handler);
+
+    if(!coap_registered) {
+      LOG_INFO("CoAP registration failed. Retrying in %u seconds...\n",
+               (unsigned int)(COAP_REG_RETRY_INTERVAL / CLOCK_SECOND));
+
+      etimer_set(&periodic_timer, COAP_REG_RETRY_INTERVAL);
+      PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&periodic_timer));
+    }
+  }
+
+  if(!coap_registered) {
+    LOG_ERR("CoAP registration failed after %u attempts\n",
+            MAX_COAP_REG_ATTEMPTS);
+
+    LOG_ERR("Unable to connect to the server: check your connection and switch patient node OFF and ON\n");
+
+    while(1) {
+      PROCESS_YIELD();
+    }
+  }
+
+  LOG_INFO("CoAP registration completed. Starting MQTT\n");
+
+  // Activate MQTT and periodic sampling only after successful CoAP registration
+
   mqtt_register(&conn, &patient_node_process, client_id, mqtt_event, MAX_TCP_SEGMENT_SIZE);
 
   state = STATE_INIT;
+
   etimer_set(&periodic_timer, STATE_MACHINE_PERIODIC);
   etimer_set(&sampling_timer, SAMPLE_PERIOD);
 
@@ -458,7 +522,7 @@ PROCESS_THREAD(patient_node_process, ev, data)
         connecting_ticks++;
 
         if(connecting_ticks >= CONNECTING_TIMEOUT_INTERVAL){
-          LOG_INFOR("MQTT Connecting timeout\n");
+          LOG_INFO("MQTT Connecting timeout\n");
 
           connecting_ticks = 0;
           reconnect_ticks = 0;
@@ -472,6 +536,7 @@ PROCESS_THREAD(patient_node_process, ev, data)
           } else {
             state = STATE_RECONNECTING_FAST;
             LOG_INFO("Retrying MQTT connection in fast reconnect mode\n");
+          }
         }
       }
 
@@ -488,8 +553,12 @@ PROCESS_THREAD(patient_node_process, ev, data)
         //if alarm is active -> at each tick we will publish the message in the alarm list 
         if(alarm_active && alarm_grace_ticks > 0) {
           alarm_grace_ticks--;   //skip this tick to avoid collisions
-        }
-        else if(alarm_active || publish_counter >= publish_every_n_ticks) {
+        }else if(alarm_active) {
+          if(publish_counter >= get_alarm_interval_ticks()) {
+            publish_counter = 0;
+            publish_heartbeat();
+          }
+        } else if(publish_counter >= publish_every_n_ticks) {
           publish_counter = 0;
           publish_heartbeat();
         }

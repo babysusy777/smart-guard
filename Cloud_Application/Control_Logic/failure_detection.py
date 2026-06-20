@@ -14,12 +14,13 @@ influx_client = InfluxDBClient(url=URL, token=TOKEN, org=ORG)
 write_api = influx_client.write_api(write_options=SYNCHRONOUS)
 query_api = influx_client.query_api()
 
-#failure detection thresholds
-#different thresholds: if the node has an active FALL alarm (heartbeat rate decrease)
-NORMAL_THRESHOLD_SECONDS = 90  #about 3 missed heartbeats at the 30s rate
-ALARM_THRESHOLD_SECONDS = 3  #about 6 missed heartbeats at the 0.5s rate
-
 POLL_INTERVAL_SECONDS = 10
+
+#failure detection thresholds
+ALARM_SPEEDUP_FACTOR = 60 
+MISSED_NORMAL = 3
+MISSED_ALARM = 6
+FALLBACK_RATE_SECONDS = 30
 
 #returns {node_id: last_heartbeat_datetime} for every node that has published at least one heartbeat in the last hour
 def get_last_heartbeats():
@@ -69,23 +70,48 @@ def write_failure_status(node_id, severity):
     write_api.write(bucket=BUCKET, org=ORG, record=point)
 
 
+#to understand the actual rate
+def get_configured_rates():
+    flux_query = f'''
+    from(bucket: "{BUCKET}")
+      |> range(start: -24h)
+      |> filter(fn: (r) => r._measurement == "config")
+      |> filter(fn: (r) => r._field == "rate")
+      |> group(columns: ["node_id"])
+      |> last()
+    '''
+    tables = query_api.query(flux_query, org=ORG)
+    result = {}
+    for table in tables:
+        for record in table.records:
+            result[record.values.get("node_id")] = record.get_value()
+    return result
+
+
 def poll_once():
     last_heartbeats = get_last_heartbeats()
     active_alarms = get_active_alarms()
+    configured_rates = get_configured_rates()
     now = datetime.now(timezone.utc)
 
     for node_id, last_seen in last_heartbeats.items():
         elapsed = (now - last_seen).total_seconds()
         has_active_alarm = node_id in active_alarms
-        threshold = ALARM_THRESHOLD_SECONDS if has_active_alarm else NORMAL_THRESHOLD_SECONDS
+        rate = configured_rates.get(node_id, FALLBACK_RATE_SECONDS)   # <-- mancava
+
+        if has_active_alarm:
+            alarm_interval = max(rate / ALARM_SPEEDUP_FACTOR, 0.5)
+            threshold = MISSED_ALARM * alarm_interval
+        else:
+            threshold = MISSED_NORMAL * rate
 
         severity = "CRITICAL" if elapsed > threshold else "NORMAL"
         write_failure_status(node_id, severity)
 
         if severity == "CRITICAL":
             print(f"[FailureDetector] {node_id}: CRITICAL "
-                  f"(no heartbeat for {elapsed:.1f}s, threshold={threshold}s, "
-                  f"active_alarm={has_active_alarm})")
+                  f"(no heartbeat for {elapsed:.1f}s, threshold={threshold:.1f}s, "
+                  f"active_alarm={has_active_alarm}, rate={rate}s)")
 
 
 def main():
