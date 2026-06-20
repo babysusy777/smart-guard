@@ -24,6 +24,8 @@ WINDOW_SECONDS = 5 * 60 #5 minutes
 EXPECTED_RATIO_THRESHOLD = 0.7 #below 70% of expected heartbeats -> congestion
 POLL_INTERVAL_SECONDS = 60 #how often we check for congestion
 
+ALARM_SPEEDUP_FACTOR = 60
+
 CONFIG_PATH = "/config"
 COAP_PORT = 5683
 
@@ -72,6 +74,24 @@ def count_heartbeats(node_id):
         for record in table.records:
             return record.get_value()
     return 0
+
+#adaptation for active alarms
+def get_active_alarms():
+    flux_query = f'''
+    from(bucket: "{BUCKET}")
+      |> range(start: -1h)
+      |> filter(fn: (r) => r._measurement == "alarm")
+      |> filter(fn: (r) => r._field == "event")
+      |> group(columns: ["node_id"])
+      |> last()
+    '''
+    tables = query_api.query(flux_query, org=ORG)
+    active = set()
+    for table in tables:
+        for record in table.records:
+            if record.get_value() == "FALL":
+                active.add(record.values.get("node_id"))
+    return active
 
 
 #GET /config on a node, used at startup to discover its current rate
@@ -132,14 +152,19 @@ async def check_congestion_once():
             write_config_rate(node_id, rate) 
 
     for node_id, state in node_state.items():
+        active_alarms = get_active_alarms()
         elapsed_since_discovery = time.time() - state["discovered_at"]
 
+        effective_rate = state["rate"]
+        if node_id in active_alarms:
+            effective_rate = max(state["rate"] / ALARM_SPEEDUP_FACTOR, 0.5)
+        
         #do not control a node until he sent at least 2 heartbits
-        if elapsed_since_discovery < state["rate"] * 2:
+        if elapsed_since_discovery < effective_rate * 2:
             continue
 
         effective_window = min(elapsed_since_discovery, WINDOW_SECONDS)
-        expected = effective_window / state["rate"]
+        expected = effective_window / effective_rate
         received = count_heartbeats(node_id)
         ratio = received / expected if expected > 0 else 1.0
 
