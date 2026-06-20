@@ -38,7 +38,6 @@ static const char *broker_ip = MQTT_CLIENT_BROKER_IP_ADDR;
 #define TOPIC_BUFFER_SIZE 96 
 #define APP_BUFFER_SIZE 512
 
-
 static char client_id[BUFFER_SIZE];
 static char heartbeat_topic[TOPIC_BUFFER_SIZE];
 static char alarm_topic[TOPIC_BUFFER_SIZE];
@@ -57,7 +56,6 @@ static uint8_t state;
 #define STATE_SUBSCRIBED 4
 #define STATE_RECONNECTING_FAST 5
 #define STATE_RECONNECTING_SLOW 6
-
 
 static uint8_t reconnect_attempts = 0;
 static unsigned long reconnect_ticks = 0;
@@ -90,6 +88,8 @@ static struct etimer sampling_timer;
 
 static uint8_t coap_registered = 0;
 static uint8_t coap_registration_attempts = 0;
+
+static uint8_t pending_alarm_resolved = 0; 
 
 #define ALARM_SPEEDUP_FACTOR 60 //alarm interval becomes equal to publish_every_n_ticks / FACTOR 
 //FACTOR is sent by cloud application to regulate the congestion
@@ -200,10 +200,7 @@ static void pub_handler(const char *topic, uint16_t topic_len, const uint8_t *ch
           LOG_INFO("Alarm Sound OFF\n");
         }
     LOG_INFO("Allarme confermato dal caregiver\n");
-
-    if(state == STATE_SUBSCRIBED) {
-      publish_alarm_resolved();
-    }
+    pending_alarm_resolved = 1;
   }
 }
 
@@ -549,6 +546,10 @@ PROCESS_THREAD(patient_node_process, ev, data) {
       }
 
       if(state == STATE_SUBSCRIBED) {
+        if(pending_alarm_resolved) {
+          pending_alarm_resolved = 0;
+          publish_alarm_resolved();
+        }
         publish_counter++;
         //if alarm is active -> at each tick we will publish the message in the alarm list 
         if(alarm_active && alarm_grace_ticks > 0) {
