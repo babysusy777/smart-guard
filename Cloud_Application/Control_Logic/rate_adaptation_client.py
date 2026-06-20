@@ -18,7 +18,7 @@ write_api = influx_client.write_api(write_options=SYNCHRONOUS)
 query_api = influx_client.query_api()
 
 #rate adaptation parameters
-DEFAULT_RATE_SECONDS = 30
+DEFAULT_RATE_SECONDS = 30 #values used if the node does not respond
 MAX_RATE_SECONDS = 240
 WINDOW_SECONDS = 5 * 60 #5 minutes
 EXPECTED_RATIO_THRESHOLD = 0.7 #below 70% of expected heartbeats -> congestion
@@ -136,7 +136,7 @@ async def initialize_node_state():
     now = time.time()
     for node_id, ip_address in nodes.items():
         rate = await coap_get_config(ip_address)
-        node_state[node_id] = {"ip": ip_address, "rate": rate, "discovered_at": now}
+        node_state[node_id] = {"ip": ip_address, "rate": rate, "discovered_at": now, "default_rate": rate }
         write_config_rate(node_id, rate)
         print(f"[CoAP_actuator] Discovered {node_id} ({ip_address}): rate={rate}s")
 
@@ -148,7 +148,7 @@ async def check_congestion_once():
     for node_id, ip_address in nodes.items():
         if node_id not in node_state:
             rate = await coap_get_config(ip_address)
-            node_state[node_id] = {"ip": ip_address, "rate": rate, "discovered_at": time.time()}
+            node_state[node_id] = {"ip": ip_address, "rate": rate, "discovered_at": time.time(), "default_rate": rate}
             write_config_rate(node_id, rate) 
 
     for node_id, state in node_state.items():
@@ -179,8 +179,8 @@ async def check_congestion_once():
                 write_config_rate(node_id, new_rate) 
         else:
             #no congestions are present, so if the rate is over the default we reduce it 
-            if state["rate"] > DEFAULT_RATE_SECONDS:
-                new_rate = max(state["rate"] // 2, DEFAULT_RATE_SECONDS)
+            if state["rate"] > state["default_rate"]:
+                new_rate = max(state["rate"] // 2, state["default_rate"])
                 print(f"[CoAP_actuator] No congestion for {node_id} "
                     f"(ratio={ratio:.2f}). Lowering rate {state['rate']}s -> {new_rate}s")
                 await coap_put_config(state["ip"], new_rate)
