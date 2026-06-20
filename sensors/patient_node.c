@@ -60,6 +60,7 @@ static uint8_t state;
 
 static uint8_t reconnect_attempts = 0;
 static unsigned long reconnect_ticks = 0;
+static unsigned long connecting_ticks = 0;
 static uint8_t reconnect_mode_slow = 0;
 static uint8_t alarm_sound = 0;
 
@@ -70,6 +71,7 @@ static uint8_t alarm_grace_ticks = 0;
 #define MAX_FAST_RECONNECT_ATTEMPTS 5 // Da scegliere
 #define FAST_RECONNECT_INTERVAL (5 * CLOCK_SECOND)/(STATE_MACHINE_PERIODIC) 
 #define SLOW_RECONNECT_INTERVAL (60 * CLOCK_SECOND)/(STATE_MACHINE_PERIODIC) 
+#define CONNECTING_TIMEOUT_INTERVAL (20 * CLOCK_SECOND)/(STATE_MACHINE_PERIODIC)
 
 
 #define STATE_MACHINE_PERIODIC (CLOCK_SECOND >> 1)
@@ -214,6 +216,7 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
     LOG_INFO("MQTT connected\n");
     reconnect_attempts = 0;
     reconnect_ticks = 0;
+    connecting_ticks = 0;
     reconnect_mode_slow = 0;
     state = STATE_CONNECTED;
     break;
@@ -221,9 +224,11 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
   case MQTT_EVENT_DISCONNECTED:
     LOG_INFO("MQTT disconnected. Reason %u\n", *((mqtt_event_t *)data));
     reconnect_ticks = 0;
+    connecting_ticks = 0;
+
     if(reconnect_attempts >= MAX_FAST_RECONNECT_ATTEMPTS) {
-    reconnect_mode_slow = 1;
-    state = STATE_RECONNECTING_SLOW;
+      reconnect_mode_slow = 1;
+      state = STATE_RECONNECTING_SLOW;
     } else {
       state = STATE_RECONNECTING_FAST;
     }
@@ -447,6 +452,29 @@ PROCESS_THREAD(patient_node_process, ev, data)
         state = STATE_CONNECTING;
       }
 
+      // Codice per evitare di rimanere indefinitely in stato CONNECTING se non arriva mai
+      // un mqtt event connected/disconnected
+      if(state == STATE_CONNECTING) {
+        connecting_ticks++;
+
+        if(connecting_ticks >= CONNECTING_TIMEOUT_INTERVAL){
+          LOG_INFOR("MQTT Connecting timeout\n");
+
+          connecting_ticks = 0;
+          reconnect_ticks = 0;
+
+          mqtt_disconnect(&conn);
+
+          if(reconnect_attempts >= MAX_FAST_RECONNECT_ATTEMPTS) {
+            reconnect_mode_slow = 1;
+            state = STATE_RECONNECTING_SLOW;
+            LOG_INFO("Switching to slow reconnect mode\n");
+          } else {
+            state = STATE_RECONNECTING_FAST;
+            LOG_INFO("Retrying MQTT connection in fast reconnect mode\n");
+        }
+      }
+
       if(state == STATE_CONNECTED) {
         status = mqtt_subscribe(&conn, NULL, ack_topic, MQTT_QOS_LEVEL_0);
         if(status == MQTT_STATUS_OUT_QUEUE_FULL) {
@@ -461,7 +489,7 @@ PROCESS_THREAD(patient_node_process, ev, data)
         if(alarm_active && alarm_grace_ticks > 0) {
           alarm_grace_ticks--;   //skip this tick to avoid collisions
         }
-        if(alarm_active || publish_counter >= publish_every_n_ticks) {
+        else if(alarm_active || publish_counter >= publish_every_n_ticks) {
           publish_counter = 0;
           publish_heartbeat();
         }
@@ -480,11 +508,12 @@ PROCESS_THREAD(patient_node_process, ev, data)
 
             memcpy(broker_address, broker_ip, strlen(broker_ip));
             reconnect_attempts++;
+            connecting_ticks = 0;
             mqtt_connect(&conn, broker_address, DEFAULT_BROKER_PORT, (DEFAULT_PUBLISH_INTERVAL * 3) / CLOCK_SECOND, MQTT_CLEAN_SESSION_ON);
             state = STATE_CONNECTING;
           }
           else {
-            LOG_INFO("Network routing unavailable\n");
+            LOG_INFO("No IPv6 route yet. Waiting before next reconnect attempt\n");
           }
         }
       }
@@ -501,6 +530,7 @@ PROCESS_THREAD(patient_node_process, ev, data)
             memcpy(broker_address, broker_ip, strlen(broker_ip));
             mqtt_connect(&conn, broker_address, DEFAULT_BROKER_PORT, (DEFAULT_PUBLISH_INTERVAL * 3) / CLOCK_SECOND, MQTT_CLEAN_SESSION_ON);
             reconnect_attempts++;
+            connecting_ticks = 0;
             state = STATE_CONNECTING;
           }
           else {

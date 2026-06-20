@@ -51,10 +51,23 @@ static uint8_t state;
 #define STATE_CONNECTING 2
 #define STATE_CONNECTED 3
 #define STATE_SUBSCRIBED 4
-#define STATE_DISCONNECTED 5
+#define STATE_RECONNECTING_FAST 5
+#define STATE_RECONNECTING_SLOW 6
+#define STATE_MANUAL_RESTART_REQUIRED 7
 
 #define STATE_MACHINE_PERIODIC (CLOCK_SECOND >> 1)
 static struct etimer periodic_timer;
+
+#define MAX_FAST_RECONNECT_ATTEMPTS 5
+#define MAX_TOTAL_RECONNECT_ATTEMPTS 8
+
+#define FAST_RECONNECT_INTERVAL (5 * CLOCK_SECOND) / STATE_MACHINE_PERIODIC
+#define SLOW_RECONNECT_INTERVAL (60 * CLOCK_SECOND) / STATE_MACHINE_PERIODIC
+#define CONNECTING_TIMEOUT_INTERVAL (20 * CLOCK_SECOND) / STATE_MACHINE_PERIODIC
+
+static uint8_t reconnect_attempts = 0;
+static unsigned long reconnect_ticks = 0;
+static unsigned long connecting_ticks = 0;
 
 //CoAP registration
 #define REGISTRATION_SERVER_EP "coap://[fd00::1]:5683"
@@ -107,6 +120,25 @@ static bool have_connectivity(void) {
     return false;
   }
   return true;
+}
+
+static void enter_reconnect_or_manual_restart(void) {
+  reconnect_ticks = 0;
+  connecting_ticks = 0;
+
+  if(reconnect_attempts >= MAX_TOTAL_RECONNECT_ATTEMPTS) {
+    state = STATE_MANUAL_RESTART_REQUIRED;
+    LOG_ERR("MQTT reconnection failed after %u attempts. Manual power cycle required: switch caregiver node OFF and ON.\n", reconnect_attempts);
+    return;
+  }
+
+  if(reconnect_attempts >= MAX_FAST_RECONNECT_ATTEMPTS) {
+    state = STATE_RECONNECTING_SLOW;
+    LOG_INFO("MQTT reconnect: switching to slow mode\n");
+  } else {
+    state = STATE_RECONNECTING_FAST;
+    LOG_INFO("MQTT reconnect: using fast mode\n");
+  }
 }
 
 //adds alarm at the end of the queue
@@ -256,12 +288,16 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
   switch(event) {
   case MQTT_EVENT_CONNECTED:
     LOG_INFO("MQTT connected\n");
+    reconnect_attempts = 0;
+    reconnect_ticks = 0;
+    connecting_ticks = 0;
     state = STATE_CONNECTED;
     break;
 
   case MQTT_EVENT_DISCONNECTED:
     LOG_INFO("MQTT disconnected. Reason %u\n", *((mqtt_event_t *)data));
     state = STATE_DISCONNECTED;
+    enter_reconnect_or_manual_restart();
     process_poll(&caregiver_process);
     break;
 
@@ -426,6 +462,16 @@ PROCESS_THREAD(caregiver_process, ev, data)
         state = STATE_CONNECTING;
       }
 
+      if(state == STATE_CONNECTING) {
+        connecting_ticks++;
+
+        if(connecting_ticks >= CONNECTING_TIMEOUT_INTERVAL) {
+          LOG_ERR("MQTT connecting timeout\n");
+          mqtt_disconnect(&conn);
+          enter_reconnect_or_manual_restart();
+        }
+      }
+
       if(state == STATE_CONNECTED) {
         //subscribes to all patients' alarms using a wildcard
         status = mqtt_subscribe(&conn, NULL, "alarm/#", MQTT_QOS_LEVEL_1);
@@ -441,9 +487,40 @@ PROCESS_THREAD(caregiver_process, ev, data)
           publish_counter = 0;
           publish_heartbeat();
         }
-      } else if(state == STATE_DISCONNECTED) {
-        LOG_ERR("Disconnected from MQTT broker\n");
-        /* TODO: gestione riconnessione, se necessario */
+      }
+      
+      if(state == STATE_RECONNECTING_FAST || state == STATE_RECONNECTING_SLOW) {
+        unsigned long interval;
+
+        interval = (state == STATE_RECONNECTING_FAST) ? FAST_RECONNECT_INTERVAL : SLOW_RECONNECT_INTERVAL;
+
+        reconnect_ticks++;
+        if(reconnect_ticks >= interval) {
+          reconnect_ticks = 0;
+
+          if(have_connectivity()) {
+            reconnect_attempts++;
+
+            LOG_INFO("MQTT reconnect attempt %u/%u\n",
+                     reconnect_attempts, MAX_TOTAL_RECONNECT_ATTEMPTS);
+
+            snprintf(broker_address, CONFIG_IP_ADDR_STR_LEN, "%s", broker_ip);
+
+            connecting_ticks = 0;
+
+            mqtt_connect(&conn, broker_address, DEFAULT_BROKER_PORT,
+                         (DEFAULT_PUBLISH_INTERVAL * 3) / CLOCK_SECOND,
+                         MQTT_CLEAN_SESSION_ON);
+
+            state = STATE_CONNECTING;
+          } else {
+            LOG_INFO("No IPv6 route yet. Waiting before next reconnect attempt\n");
+          }
+        }
+      }
+      
+      if(state == STATE_MANUAL_RESTART_REQUIRED) {
+        LOG_ERR("Caregiver node offline. Manual restart required: switch node OFF and ON. MQTT retries stopped to save battery.\n");
       }
 
       etimer_set(&periodic_timer, STATE_MACHINE_PERIODIC);
