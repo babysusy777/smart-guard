@@ -113,9 +113,10 @@ async def coap_put_config(ip_address, new_rate):
 #for every node calls coap_get_config
 async def initialize_node_state():
     nodes = get_registered_nodes()
+    now = time.time()
     for node_id, ip_address in nodes.items():
         rate = await coap_get_config(ip_address)
-        node_state[node_id] = {"ip": ip_address, "rate": rate}
+        node_state[node_id] = {"ip": ip_address, "rate": rate, "discovered_at": now}
         write_config_rate(node_id, rate)
         print(f"[CoAP_actuator] Discovered {node_id} ({ip_address}): rate={rate}s")
 
@@ -127,11 +128,18 @@ async def check_congestion_once():
     for node_id, ip_address in nodes.items():
         if node_id not in node_state:
             rate = await coap_get_config(ip_address)
-            node_state[node_id] = {"ip": ip_address, "rate": rate}
+            node_state[node_id] = {"ip": ip_address, "rate": rate, "discovered_at": time.time()}
             write_config_rate(node_id, rate) 
 
     for node_id, state in node_state.items():
-        expected = WINDOW_SECONDS / state["rate"]
+        elapsed_since_discovery = time.time() - state["discovered_at"]
+
+        #do not control a node until he sent at least 2 heartbits
+        if elapsed_since_discovery < state["rate"] * 2:
+            continue
+
+        effective_window = min(elapsed_since_discovery, WINDOW_SECONDS)
+        expected = effective_window / state["rate"]
         received = count_heartbeats(node_id)
         ratio = received / expected if expected > 0 else 1.0
 
