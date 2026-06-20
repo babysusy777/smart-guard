@@ -177,15 +177,15 @@ async def check_congestion_once():
                 await coap_put_config(state["ip"], new_rate)
                 state["rate"] = new_rate
                 write_config_rate(node_id, new_rate) 
-            else:
-                #no congestions are present, so if the rate is over the default we reduce it 
-                if state["rate"] > DEFAULT_RATE_SECONDS:
-                    new_rate = max(state["rate"] // 2, DEFAULT_RATE_SECONDS)
-                    print(f"[CoAP_actuator] No congestion for {node_id} "
-                        f"(ratio={ratio:.2f}). Lowering rate {state['rate']}s -> {new_rate}s")
-                    await coap_put_config(state["ip"], new_rate)
-                    state["rate"] = new_rate
-                    write_config_rate(node_id, new_rate) 
+        else:
+            #no congestions are present, so if the rate is over the default we reduce it 
+            if state["rate"] > DEFAULT_RATE_SECONDS:
+                new_rate = max(state["rate"] // 2, DEFAULT_RATE_SECONDS)
+                print(f"[CoAP_actuator] No congestion for {node_id} "
+                    f"(ratio={ratio:.2f}). Lowering rate {state['rate']}s -> {new_rate}s")
+                await coap_put_config(state["ip"], new_rate)
+                state["rate"] = new_rate
+                write_config_rate(node_id, new_rate) 
 
 
 async def main():
