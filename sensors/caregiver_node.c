@@ -530,6 +530,26 @@ static void publish_ack(const char *node_id) {
   mqtt_publish(&conn, NULL, ack_topic_buf,(uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
 }
 
+static uint8_t publish_battery_status(uint8_t level) {
+  mqtt_status_t publish_status;
+
+  if(state != STATE_SUBSCRIBED) {
+    LOG_INFO("Cannot publish battery status: MQTT not subscribed\n");
+    return 0;
+  }
+
+  snprintf(battery_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"event\":\"BATTERY_LOW\",\"battery\":%u,\"new_rate\":%u}", client_id, level, LOW_BATTERY_STATUS_INTERVAL);
+  publish_status = mqtt_publish(&conn, NULL, battery_topic, (uint8_t *)battery_buffer, strlen(battery_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
+
+  if(publish_status == MQTT_STATUS_OK) {
+    LOG_WARN("Battery low notification sent: %u%%, new_rate=%us\n", level, LOW_BATTERY_STATUS_INTERVAL);
+    return 1;
+  }
+
+  LOG_WARN("Battery low notification could not be queued: status=%d\n", publish_status);
+  return 0;
+}
+
 //callback to handle response to CoAP registration (debug/logging)
 static void client_chunk_handler(coap_message_t *response) {
   const uint8_t *chunk;
