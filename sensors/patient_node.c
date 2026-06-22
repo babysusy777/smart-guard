@@ -71,6 +71,10 @@ static unsigned long connecting_ticks = 0;
 static uint8_t reconnect_mode_slow = 0;
 static uint8_t alarm_sound = 0;
 
+static uint8_t pending_fall_alarm = 0;
+#define FALL_ALARM_RETRY_INTERVAL (2 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
+static unsigned long fall_alarm_retry_counter = 0;
+
 #define MAX_TOTAL_RECONNECT_ATTEMPTS 32
 
 static uint8_t alarm_grace_ticks = 0;
@@ -229,10 +233,25 @@ void set_publish_period(int seconds) {
 //used by the patient to notify that he/she is ok 
 //used also by the caregiver that has served the alarm request
 static uint8_t publish_alarm_resolved(void) {
-  mqtt_status_t st;
-  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"event\":\"RESOLVED\"}", client_id);
-  st = mqtt_publish(&conn, NULL, alarm_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
-  return (st == MQTT_STATUS_OK) ? 1 : 0;
+  mqtt_status_t publish_status;
+
+  snprintf(app_buffer, APP_BUFFER_SIZE,
+           "{\"node_id\":\"%s\",\"event\":\"RESOLVED\"}",
+           client_id);
+
+  publish_status = mqtt_publish(&conn, NULL, alarm_topic,
+                                (uint8_t *)app_buffer,
+                                strlen(app_buffer),
+                                MQTT_QOS_LEVEL_1,
+                                MQTT_RETAIN_OFF);
+
+  if(publish_status == MQTT_STATUS_OK) {
+    LOG_WARN("RESOLVED event queued successfully\n");
+    return 1;
+  }
+
+  LOG_ERR("RESOLVED event could not be queued: status=%d\n", publish_status);
+  return 0;
 }
 
 static uint8_t chunk_contains(const uint8_t *chunk, uint16_t chunk_len, const char *needle) {
@@ -304,10 +323,27 @@ static void pub_handler(const char *topic, uint16_t topic_len, const uint8_t *ch
 
 //publish MQTT heartbeat with status=NORMAL/FALL in JSON format
 //QoS is set to 0 since we are publishing periodic heartbits for communiting that the node is still alive
-static void publish_heartbeat(void) {
+static uint8_t publish_heartbeat(void) {
   const char *state_str = (patient_state == PATIENT_FALL) ? "FALL" : "NORMAL";
-  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"state\":\"%s\"}", client_id, state_str);
-  mqtt_publish(&conn, NULL, heartbeat_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+  mqtt_status_t publish_status;
+
+  snprintf(app_buffer, APP_BUFFER_SIZE,
+           "{\"node_id\":\"%s\",\"type\":\"patient\",\"state\":\"%s\"}",
+           client_id,
+           state_str);
+
+  publish_status = mqtt_publish(&conn, NULL, heartbeat_topic,
+                                (uint8_t *)app_buffer,
+                                strlen(app_buffer),
+                                MQTT_QOS_LEVEL_0,
+                                MQTT_RETAIN_OFF);
+
+  if(publish_status != MQTT_STATUS_OK) {
+    LOG_WARN("Heartbeat could not be queued: status=%d\n", publish_status);
+    return 0;
+  }
+
+  return 1;
 }
 
 static uint8_t publish_battery_status(uint8_t level) {
@@ -439,9 +475,26 @@ static void check_battery_thresholds(void) {
 
 //FALL detected - QoS goes to 1 to receive MQTT ACK
 //the record in the tabLe will be active until caregiver doesn't confirm
-static void publish_alarm(void) {
-  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"event\":\"FALL\"}", client_id);
-  mqtt_publish(&conn, NULL, alarm_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
+static uint8_t publish_alarm(void) {
+  mqtt_status_t publish_status;
+
+  snprintf(app_buffer, APP_BUFFER_SIZE,
+           "{\"node_id\":\"%s\",\"event\":\"FALL\"}",
+           client_id);
+
+  publish_status = mqtt_publish(&conn, NULL, alarm_topic,
+                                (uint8_t *)app_buffer,
+                                strlen(app_buffer),
+                                MQTT_QOS_LEVEL_1,
+                                MQTT_RETAIN_OFF);
+
+  if(publish_status == MQTT_STATUS_OK) {
+    LOG_WARN("FALL alarm queued successfully\n");
+    return 1;
+  }
+
+  LOG_ERR("FALL alarm could not be queued: status=%d\n", publish_status);
+  return 0;
 }
 
 //callback function called when an MQTT event arrives
@@ -632,19 +685,19 @@ PROCESS_THREAD(patient_node_process, ev, data) {
     //Button pressed -> false allarm, cancel 
     if(ev == button_hal_press_event && alarm_active) {
       LOG_INFO("FALSE ALLARM PRESSED\n");
+
       alarm_active = 0;
       patient_state = PATIENT_NORMAL;
       force_fall_sequence = 0;
       reset_window();
       leds_single_off(LEDS_RED);
-      if(alarm_sound){
+
+      if(alarm_sound) {
         alarm_sound = 0;
         LOG_INFO("Alarm Sound OFF\n");
       }
 
-      if(state == STATE_SUBSCRIBED) {
-        publish_alarm_resolved();
-      }
+      pending_alarm_resolved = 1;
     }
 
     //Button pressed >=3s -> FALL
@@ -727,10 +780,10 @@ PROCESS_THREAD(patient_node_process, ev, data) {
             alarm_active = 1;
             alarm_grace_ticks = ALARM_HEARTBEAT_GRACE_TICKS;
 
-            if(state == STATE_SUBSCRIBED) {
-              LOG_INFO("Publishing FALL alarm\n");
-              publish_alarm();
-            }
+            pending_fall_alarm = 1;
+            fall_alarm_retry_counter = FALL_ALARM_RETRY_INTERVAL;
+
+            LOG_WARN("FALL detected: alarm set as pending\n");
           }
 
         } else {
@@ -797,11 +850,30 @@ PROCESS_THREAD(patient_node_process, ev, data) {
       }
 
       if(state == STATE_SUBSCRIBED) {
-        if(pending_battery_notify) {
+        uint8_t mqtt_publish_attempted = 0;
+
+        if(pending_fall_alarm) {
+          fall_alarm_retry_counter++;
+
+          if(fall_alarm_retry_counter >= FALL_ALARM_RETRY_INTERVAL) {
+            fall_alarm_retry_counter = 0;
+            mqtt_publish_attempted = 1;
+
+            if(publish_alarm()) {
+              pending_fall_alarm = 0;
+              LOG_WARN("Pending FALL alarm delivered\n");
+            } else {
+              LOG_WARN("Pending FALL alarm not sent yet: MQTT queue busy\n");
+            }
+          }
+        }
+
+        if(!mqtt_publish_attempted && pending_battery_notify) {
           battery_notify_retry_counter++;
 
           if(battery_notify_retry_counter >= BATTERY_NOTIFY_RETRY_INTERVAL) {
             battery_notify_retry_counter = 0;
+            mqtt_publish_attempted = 1;
 
             if(publish_battery_status(pending_battery_level)) {
               pending_battery_notify = 0;
@@ -811,23 +883,32 @@ PROCESS_THREAD(patient_node_process, ev, data) {
             }
           }
         }
-        if(pending_alarm_resolved) {
+
+        if(!mqtt_publish_attempted && pending_alarm_resolved) {
+          mqtt_publish_attempted = 1;
+
           if(publish_alarm_resolved()) {
-            pending_alarm_resolved = 0;   //put this variable to 0 only if the alarm publication was made without problems
+            pending_alarm_resolved = 0;
+            LOG_WARN("Pending RESOLVED delivered\n");
+          } else {
+            LOG_WARN("Pending RESOLVED not sent yet: MQTT queue busy\n");
           }
         }
-        publish_counter++;
-        //if alarm is active -> at each tick we will publish the message in the alarm list 
-        if(alarm_active && alarm_grace_ticks > 0) {
-          alarm_grace_ticks--;   //skip this tick to avoid collisions
-        }else if(alarm_active) {
-          if(publish_counter >= get_alarm_interval_ticks()) {
+
+        if(!mqtt_publish_attempted && !pending_fall_alarm) {
+          publish_counter++;
+
+          if(alarm_active && alarm_grace_ticks > 0) {
+            alarm_grace_ticks--;
+          } else if(alarm_active) {
+            if(publish_counter >= get_alarm_interval_ticks()) {
+              publish_counter = 0;
+              publish_heartbeat();
+            }
+          } else if(publish_counter >= publish_every_n_ticks) {
             publish_counter = 0;
             publish_heartbeat();
           }
-        } else if(publish_counter >= publish_every_n_ticks) {
-          publish_counter = 0;
-          publish_heartbeat();
         }
       } 
 
