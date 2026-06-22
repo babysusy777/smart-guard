@@ -24,7 +24,7 @@ WINDOW_SECONDS = 5 * 60 #5 minutes
 EXPECTED_RATIO_THRESHOLD = 0.7 #below 70% of expected heartbeats -> congestion
 POLL_INTERVAL_SECONDS = 60 #how often we check for congestion
 
-ALARM_SPEEDUP_FACTOR = 60
+ALARM_SPEEDUP_FACTOR = 10
 
 CONFIG_PATH = "/config"
 COAP_PORT = 5683
