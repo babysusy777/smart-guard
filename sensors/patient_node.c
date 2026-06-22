@@ -145,7 +145,7 @@ static unsigned long fall_alarm_retry_counter = 0;
 #define RESOLVED_RETRY_INTERVAL (5 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
 static unsigned long resolved_retry_counter = 0;
 
-#define ALARM_SPEEDUP_FACTOR 60 //alarm interval becomes equal to publish_every_n_ticks / FACTOR 
+#define ALARM_SPEEDUP_FACTOR 10 //alarm interval becomes equal to publish_every_n_ticks / FACTOR 
 //FACTOR is sent by cloud application to regulate the congestion
 
 // Resource CoAP /config
