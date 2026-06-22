@@ -49,6 +49,7 @@ static char ack_topic[TOPIC_BUFFER_SIZE];
 static char app_buffer[APP_BUFFER_SIZE];
 static char broker_address[CONFIG_IP_ADDR_STR_LEN];
 static char battery_topic[TOPIC_BUFFER_SIZE];
+static char battery_buffer[APP_BUFFER_SIZE];
 
 static struct mqtt_connection conn;
 mqtt_status_t status;
@@ -114,6 +115,7 @@ static uint8_t battery_notified_5 = 0;
 static uint8_t low_battery_mode = 0;
 static uint8_t yellow_blink_active = 0;
 static uint8_t yellow_led_on = 0;
+static uint8_t battery_dead = 0;
 
 
 //CoAP registration
@@ -309,9 +311,8 @@ static uint8_t publish_battery_status(uint8_t level) {
     return 0;
   }
 
-  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"event\":\"BATTERY_LOW\",\"battery\":%u,\"new_rate\":%u}", client_id, level, LOW_BATTERY_STATUS_INTERVAL);
-
-  publish_status = mqtt_publish(&conn, NULL, battery_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
+  snprintf(battery_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"event\":\"BATTERY_LOW\",\"battery\":%u,\"new_rate\":%u}", client_id, level, LOW_BATTERY_STATUS_INTERVAL);
+  publish_status = mqtt_publish(&conn, NULL, battery_topic, (uint8_t *)battery_buffer, strlen(battery_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
 
   if(publish_status == MQTT_STATUS_OK) {
     LOG_WARN("Battery low notification sent: %u%%, new_rate=%us\n", level, LOW_BATTERY_STATUS_INTERVAL);
@@ -320,6 +321,28 @@ static uint8_t publish_battery_status(uint8_t level) {
 
   LOG_WARN("Battery low notification could not be queued: status=%d\n", publish_status);
   return 0;
+}
+
+static void enter_reconnect_or_manual_restart(void) {
+  reconnect_ticks = 0;
+  connecting_ticks = 0;
+
+  if(reconnect_attempts >= MAX_TOTAL_RECONNECT_ATTEMPTS) {
+    state = STATE_MANUAL_RESTART_REQUIRED;
+    LOG_ERR("MQTT reconnection failed after %u attempts. Manual power cycle required: switch patient node OFF and ON.\n",
+            reconnect_attempts);
+    return;
+  }
+
+  if(reconnect_attempts >= MAX_FAST_RECONNECT_ATTEMPTS) {
+    reconnect_mode_slow = 1;
+    state = STATE_RECONNECTING_SLOW;
+    LOG_INFO("MQTT reconnect: switching to slow mode\n");
+  } else {
+    reconnect_mode_slow = 0;
+    state = STATE_RECONNECTING_FAST;
+    LOG_INFO("MQTT reconnect: using fast mode\n");
+  }
 }
 
 static void enable_low_battery_mode(void) {
@@ -333,6 +356,44 @@ static void enable_low_battery_mode(void) {
     LOG_WARN("Low battery mode enabled: NORMAL heartbeat interval set to %u seconds\n", LOW_BATTERY_STATUS_INTERVAL);
   }
 }
+
+static void handle_battery_depleted(void) {
+  uint8_t old_state;
+
+  if(battery_dead) {
+    return;
+  }
+
+  battery_dead = 1;
+  old_state = state;
+
+  LOG_ERR("Battery depleted. Patient node is offline. Manual restart required: switch patient node OFF and ON.\n");
+
+  alarm_active = 0;
+  alarm_sound = 0;
+  force_fall_sequence = 0;
+  patient_state = PATIENT_NORMAL;
+
+  yellow_blink_active = 0;
+  yellow_led_on = 0;
+
+  leds_single_off(LEDS_RED);
+  leds_single_off(LEDS_YELLOW);
+
+  etimer_stop(&sampling_timer);
+  etimer_stop(&battery_timer);
+  etimer_stop(&yellow_blink_timer);
+
+  state = STATE_MANUAL_RESTART_REQUIRED;
+
+  if(old_state == STATE_CONNECTED ||
+     old_state == STATE_SUBSCRIBED ||
+     old_state == STATE_SUBSCRIBING ||
+     old_state == STATE_CONNECTING) {
+    mqtt_disconnect(&conn);
+  }
+}
+
 
 static void check_battery_thresholds(void) {
   if(battery_level <= BATTERY_LOW_20 && !battery_notified_20) {
@@ -393,6 +454,13 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
 
   case MQTT_EVENT_DISCONNECTED:
     LOG_INFO("MQTT disconnected. Reason %u\n", *((mqtt_event_t *)data));
+
+    if(battery_dead) {
+      state = STATE_MANUAL_RESTART_REQUIRED;
+      LOG_ERR("MQTT disconnected because battery is depleted. Manual restart required.\n");
+      break;
+    }
+
     enter_reconnect_or_manual_restart();
     process_poll(&patient_node_process);
     break;
@@ -449,28 +517,6 @@ static void client_chunk_handler(coap_message_t *response) {
   len = coap_get_payload(response, &chunk);
   LOG_INFO("Registration response: %.*s\n", len, (char *)chunk);
   coap_registered = 1;
-}
-
-static void enter_reconnect_or_manual_restart(void) {
-  reconnect_ticks = 0;
-  connecting_ticks = 0;
-
-  if(reconnect_attempts >= MAX_TOTAL_RECONNECT_ATTEMPTS) {
-    state = STATE_MANUAL_RESTART_REQUIRED;
-    LOG_ERR("MQTT reconnection failed after %u attempts. Manual power cycle required: switch patient node OFF and ON.\n",
-            reconnect_attempts);
-    return;
-  }
-
-  if(reconnect_attempts >= MAX_FAST_RECONNECT_ATTEMPTS) {
-    reconnect_mode_slow = 1;
-    state = STATE_RECONNECTING_SLOW;
-    LOG_INFO("MQTT reconnect: switching to slow mode\n");
-  } else {
-    reconnect_mode_slow = 0;
-    state = STATE_RECONNECTING_FAST;
-    LOG_INFO("MQTT reconnect: using fast mode\n");
-  }
 }
 
 
@@ -574,6 +620,10 @@ PROCESS_THREAD(patient_node_process, ev, data) {
   while(1) {
     PROCESS_YIELD();
 
+    if(battery_dead) {
+      continue;
+    }
+
     //Button pressed -> false allarm, cancel 
     if(ev == button_hal_press_event && alarm_active) {
       LOG_INFO("FALSE ALLARM PRESSED\n");
@@ -613,6 +663,11 @@ PROCESS_THREAD(patient_node_process, ev, data) {
       }
 
       LOG_INFO("Simulated battery level: %u%%\n", battery_level);
+
+      if(battery_level == 0) {
+        handle_battery_depleted();
+        continue;
+      }
 
       check_battery_thresholds();
 
