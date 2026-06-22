@@ -118,6 +118,9 @@ static uint8_t yellow_led_on = 0;
 static uint8_t battery_dead = 0;
 static uint8_t pending_battery_level = 0;
 static uint8_t pending_battery_notify = 0;
+#define BATTERY_NOTIFY_RETRY_INTERVAL (10 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
+
+static unsigned long battery_notify_retry_counter = 0;
 
 
 //CoAP registration
@@ -405,6 +408,7 @@ static void check_battery_thresholds(void) {
     battery_notified_20 = 1;
     pending_battery_level = battery_level;
     pending_battery_notify = 1;
+    battery_notify_retry_counter = BATTERY_NOTIFY_RETRY_INTERVAL;
     LOG_WARN("Battery threshold reached: 5%%\n");
   } else if(battery_level <= BATTERY_LOW_10 && !battery_notified_10) {
     enable_low_battery_mode();
@@ -412,6 +416,7 @@ static void check_battery_thresholds(void) {
     battery_notified_20 = 1;
     pending_battery_level = battery_level;
     pending_battery_notify = 1;
+    battery_notify_retry_counter = BATTERY_NOTIFY_RETRY_INTERVAL;
     LOG_WARN("Battery threshold reached: 10%%\n");
   } else if(battery_level <= BATTERY_LOW_20 && !battery_notified_20) {
     enable_low_battery_mode();
@@ -419,6 +424,7 @@ static void check_battery_thresholds(void) {
     battery_notified_20 = 1;
     pending_battery_level = battery_level;
     pending_battery_notify = 1;
+    battery_notify_retry_counter = BATTERY_NOTIFY_RETRY_INTERVAL;
 
     yellow_blink_active = 1;
     yellow_led_on = 1;
@@ -796,8 +802,17 @@ PROCESS_THREAD(patient_node_process, ev, data) {
 
       if(state == STATE_SUBSCRIBED) {
         if(pending_battery_notify) {
-          if(publish_battery_status(pending_battery_level)) {
-            pending_battery_notify = 0;
+          battery_notify_retry_counter++;
+
+          if(battery_notify_retry_counter >= BATTERY_NOTIFY_RETRY_INTERVAL) {
+            battery_notify_retry_counter = 0;
+
+            if(publish_battery_status(pending_battery_level)) {
+              pending_battery_notify = 0;
+              LOG_WARN("Pending patient battery notification delivered\n");
+            } else {
+              LOG_WARN("Pending patient battery notification not sent yet: MQTT queue busy\n");
+            }
           }
         }
         if(pending_alarm_resolved) {

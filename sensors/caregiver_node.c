@@ -112,6 +112,9 @@ static uint8_t battery_dead = 0;
 static uint8_t pending_battery_level = 0;
 static uint8_t pending_battery_notify = 0;
 
+#define BATTERY_NOTIFY_RETRY_INTERVAL (10 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
+static unsigned long battery_notify_retry_counter = 0;
+
 #define MAX_COAP_REG_ATTEMPTS 3
 #define COAP_REG_RETRY_INTERVAL (5 * CLOCK_SECOND)
 
@@ -334,26 +337,7 @@ static void handle_battery_depleted(void) {
   }
 }
 
-static uint8_t publish_battery_status(uint8_t level) {
-  mqtt_status_t publish_status;
 
-  if(state != STATE_SUBSCRIBED) {
-    LOG_INFO("Cannot publish caregiver battery status: MQTT not subscribed\n");
-    return 0;
-  }
-
-  snprintf(battery_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"event\":\"BATTERY_LOW\",\"battery\":%u,\"new_rate\":%u}", client_id, level, CAREGIVER_LOW_BATTERY_INTERVAL);
-
-  publish_status = mqtt_publish(&conn, NULL, battery_topic, (uint8_t *)battery_buffer, strlen(battery_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
-
-  if(publish_status == MQTT_STATUS_OK) {
-    LOG_WARN("Caregiver battery low notification sent: %u%%, new_rate=%us\n", level, CAREGIVER_LOW_BATTERY_INTERVAL);
-    return 1;
-  }
-
-  LOG_WARN("Caregiver battery low notification could not be queued: status=%d\n", publish_status);
-  return 0;
-}
   
 static void check_battery_thresholds(void) {
   if(battery_level <= BATTERY_LOW_5 && !battery_notified_5) {
@@ -364,6 +348,7 @@ static void check_battery_thresholds(void) {
     battery_notified_20 = 1;
     pending_battery_level = battery_level;
     pending_battery_notify = 1;
+    battery_notify_retry_counter = BATTERY_NOTIFY_RETRY_INTERVAL;
     LOG_WARN("Battery threshold reached: 5%%\n");
     
   } else if(battery_level <= BATTERY_LOW_10 && !battery_notified_10) {
@@ -373,6 +358,7 @@ static void check_battery_thresholds(void) {
     battery_notified_20 = 1;
     pending_battery_level = battery_level;
     pending_battery_notify = 1;
+    battery_notify_retry_counter = BATTERY_NOTIFY_RETRY_INTERVAL;
     LOG_WARN("Battery threshold reached: 10%%\n");
 
   } else if(battery_level <= BATTERY_LOW_20 && !battery_notified_20) {
@@ -381,6 +367,7 @@ static void check_battery_thresholds(void) {
     battery_notified_20 = 1;
     pending_battery_level = battery_level;
     pending_battery_notify = 1;
+    battery_notify_retry_counter = BATTERY_NOTIFY_RETRY_INTERVAL;
 
     yellow_blink_active = 1;
     yellow_led_on = 1;
@@ -766,10 +753,20 @@ PROCESS_THREAD(caregiver_process, ev, data)
 
       if(state == STATE_SUBSCRIBED) {
         if(pending_battery_notify) {
-          if(publish_battery_status(pending_battery_level)) {
-            pending_battery_notify = 0;
+          battery_notify_retry_counter++;
+
+          if(battery_notify_retry_counter >= BATTERY_NOTIFY_RETRY_INTERVAL) {
+            battery_notify_retry_counter = 0;
+
+            if(publish_battery_status(pending_battery_level)) {
+              pending_battery_notify = 0;
+              LOG_WARN("Pending battery notification delivered\n");
+            } else {
+              LOG_WARN("Pending battery notification not sent yet: MQTT queue busy\n");
+            }
           }
         }
+
         publish_counter++;
         if(publish_counter >= publish_every_n_ticks) {
           publish_counter = 0;
