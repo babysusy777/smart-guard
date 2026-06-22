@@ -175,8 +175,8 @@ def poll_once():
         rate = get_effective_rate(node_id, node_type, configured_rates)   
 
         if has_active_alarm:
-            alarm_interval = max(rate / ALARM_SPEEDUP_FACTOR, 0.5)
-            threshold = MISSED_ALARM * alarm_interval
+            alarm_interval = max(rate / ALARM_SPEEDUP_FACTOR, 2.0)
+            threshold = max(MISSED_ALARM * alarm_interval, 15.0)
         else:
             threshold = MISSED_NORMAL * rate
         
