@@ -952,5 +952,6 @@ PROCESS_THREAD(patient_node_process, ev, data) {
       etimer_set(&periodic_timer, STATE_MACHINE_PERIODIC);
     }
 
+  }
   PROCESS_END();
 }
