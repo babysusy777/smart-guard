@@ -165,11 +165,11 @@ int tinyml_predict_window(const patient_sample_t *window,
 
   last_score = calculate_binary_score(features);
 
-  printf(
-    "TinyML binary score=%ld threshold=%ld\n",
-    (long)(last_score * 1000.0f),
-    (long)(FALL_BINARY_DECISION_THRESHOLD * 1000.0f)
-  );
+  //printf(
+  //  "TinyML binary score=%ld threshold=%ld\n",
+  //  (long)(last_score * 1000.0f),
+  //  (long)(FALL_BINARY_DECISION_THRESHOLD * 1000.0f)
+  //);
 
   if(last_score >= FALL_BINARY_DECISION_THRESHOLD) {
     return TINYML_CLASS_FALL;

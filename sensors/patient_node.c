@@ -755,6 +755,9 @@ PROCESS_THREAD(patient_node_process, ev, data) {
 
     if((ev == PROCESS_EVENT_TIMER && data == &periodic_timer) || ev == PROCESS_EVENT_POLL) {
 
+      LOG_INFO("DEBUG state=%u battery=%u low_battery=%u battery_dead=%u alarm_active=%u\n",
+         state, battery_level, low_battery_mode, battery_dead, alarm_active);
+
       if(state == STATE_INIT) {
         if(have_connectivity()) {
           state = STATE_NET_OK;
