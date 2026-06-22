@@ -696,16 +696,12 @@ PROCESS_THREAD(patient_node_process, ev, data) {
 
     //Sample Generation
     if(ev == PROCESS_EVENT_TIMER && data == &sampling_timer) {
-      LOG_INFO("If ev == Sampling Timer\n");
       patient_sample_t sample;
       patient_state_t predicted_state;
 
       if(force_fall_sequence) {
-        LOG_INFO("Force FALL sequence = 1\n");
         sample = patient_generate_sample(PATIENT_MODE_FALL);
-        LOG_INFO("Generated FALL sample, index=%u\n", window_index);
       } else {
-        LOG_INFO("Force FALL sequence = 0\n");
         sample = patient_generate_sample(PATIENT_MODE_NORMAL);
       }
 
@@ -714,16 +710,11 @@ PROCESS_THREAD(patient_node_process, ev, data) {
       // Classification is possible only if the window is full
 
       if(window_full) { 
-
-        LOG_INFO("Window full: running classification\n");
         predicted_state = check_patient_status();
-
-        LOG_INFO("Predicted state: %s\n", predicted_state == PATIENT_FALL ? "FALL" : "NORMAL");
 
         if(predicted_state == PATIENT_FALL) {
           patient_state = PATIENT_FALL;
-          LOG_INFO("FALL detected - current MQTT state: %u\n", state);
-          LOG_INFO("Patient state changed to FALL\n");
+          LOG_INFO("FALL detected, patient state changed to FALL\n");
           leds_single_on(LEDS_RED);
           if((state != STATE_SUBSCRIBED || force_sound_on_fall) && !alarm_sound){ // in tutti i casi in cui non può inviare messaggi, oppure se il caregiver è CRITICAL 
             alarm_sound = 1;
