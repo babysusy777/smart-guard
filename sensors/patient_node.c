@@ -71,7 +71,7 @@ static unsigned long connecting_ticks = 0;
 static uint8_t reconnect_mode_slow = 0;
 static uint8_t alarm_sound = 0;
 
-#define MAX_TOTAL_RECONNECT_ATTEMPTS 8
+#define MAX_TOTAL_RECONNECT_ATTEMPTS 32
 
 static uint8_t alarm_grace_ticks = 0;
 #define ALARM_HEARTBEAT_GRACE_TICKS 2 //skip the first 2 ticks of accelerated heartbit after the alarm 
@@ -231,6 +231,7 @@ void set_publish_period(int seconds) {
 static void publish_alarm_resolved(void) {
   snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"event\":\"RESOLVED\"}", client_id);
   mqtt_publish(&conn, NULL, alarm_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
+  return (st == MQTT_STATUS_OK) ? 1 : 0;
 }
 
 static uint8_t chunk_contains(const uint8_t *chunk, uint16_t chunk_len, const char *needle) {
@@ -807,8 +808,9 @@ PROCESS_THREAD(patient_node_process, ev, data) {
           }
         }
         if(pending_alarm_resolved) {
-          pending_alarm_resolved = 0;
-          publish_alarm_resolved();
+          if(publish_alarm_resolved()) {
+            pending_alarm_resolved = 0;   //put this variable to 0 only if the alarm publication was made without problems
+          }
         }
         publish_counter++;
         //if alarm is active -> at each tick we will publish the message in the alarm list 
