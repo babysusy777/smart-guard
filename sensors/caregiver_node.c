@@ -354,40 +354,39 @@ static uint8_t publish_battery_status(uint8_t level) {
 }
 
 static void check_battery_thresholds(void) {
-  if(battery_level <= BATTERY_LOW_20 && !battery_notified_20) {
+  
+static void check_battery_thresholds(void) {
+  if(battery_level <= BATTERY_LOW_5 && !battery_notified_5) {
     enable_low_battery_mode();
+    
+    battery_notified_5 = 1;
+    battery_notified_10 = 1;
+    battery_notified_20 = 1;
+    pending_battery_level = battery_level;
+    pending_battery_notify = 1;
+    LOG_WARN("Battery threshold reached: 5%%\n");
+  } else if(battery_level <= BATTERY_LOW_10 && !battery_notified_10) {
+    enable_low_battery_mode();
+
+    battery_notified_10 = 1;
+    battery_notified_20 = 1;
+    pending_battery_level = battery_level;
+    pending_battery_notify = 1;
+    LOG_WARN("Battery threshold reached: 10%%\n");
+  } else if(battery_level <= BATTERY_LOW_20 && !battery_notified_20) {
+    enable_low_battery_mode();
+    battery_notified_20 = 1;
+    pending_battery_level = battery_level;
+    pending_battery_notify = 1;
 
     yellow_blink_active = 1;
     yellow_led_on = 1;
     leds_single_on(LEDS_YELLOW);
     etimer_set(&yellow_blink_timer, YELLOW_BLINK_ON_TIME);
 
-    if(publish_battery_status(battery_level)) {
-      battery_notified_20 = 1;
-    }
-
-    LOG_WARN("Caregiver battery threshold reached: 20%%. Yellow blinking enabled\n");
+    LOG_WARN("Battery threshold reached: 20%%\n");
   }
-
-  if(battery_level <= BATTERY_LOW_10 && !battery_notified_10) {
-    enable_low_battery_mode();
-
-    if(publish_battery_status(battery_level)) {
-      battery_notified_10 = 1;
-    }
-
-    LOG_WARN("Caregiver battery threshold reached: 10%%\n");
-  }
-
-  if(battery_level <= BATTERY_LOW_5 && !battery_notified_5) {
-    enable_low_battery_mode();
-
-    if(publish_battery_status(battery_level)) {
-      battery_notified_5 = 1;
-    }
-
-    LOG_WARN("Caregiver battery threshold reached: 5%%\n");
-  }
+}
 }
 
 //handles MQTT messages: a FALL event activates caregiver notification
