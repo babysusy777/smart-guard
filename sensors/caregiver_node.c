@@ -354,8 +354,6 @@ static uint8_t publish_battery_status(uint8_t level) {
   LOG_WARN("Caregiver battery low notification could not be queued: status=%d\n", publish_status);
   return 0;
 }
-
-static void check_battery_thresholds(void) {
   
 static void check_battery_thresholds(void) {
   if(battery_level <= BATTERY_LOW_5 && !battery_notified_5) {
@@ -391,7 +389,6 @@ static void check_battery_thresholds(void) {
 
     LOG_WARN("Battery threshold reached: 20%%\n");
   }
-}
 }
 
 //handles MQTT messages: a FALL event activates caregiver notification
