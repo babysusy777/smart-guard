@@ -25,6 +25,10 @@
 #define LOG_MODULE "patient"
 #define LOG_LEVEL  LOG_LEVEL_INFO
 
+#ifndef LEDS_YELLOW
+#define LEDS_YELLOW LEDS_GREEN
+#endif
+
 //MQTT BROKER
 #define MQTT_CLIENT_BROKER_IP_ADDR "fd00::1"
 static const char *broker_ip = MQTT_CLIENT_BROKER_IP_ADDR;
@@ -44,6 +48,7 @@ static char alarm_topic[TOPIC_BUFFER_SIZE];
 static char ack_topic[TOPIC_BUFFER_SIZE];
 static char app_buffer[APP_BUFFER_SIZE];
 static char broker_address[CONFIG_IP_ADDR_STR_LEN];
+static char battery_topic[TOPIC_BUFFER_SIZE];
 
 static struct mqtt_connection conn;
 mqtt_status_t status;
@@ -56,12 +61,16 @@ static uint8_t state;
 #define STATE_SUBSCRIBED 4
 #define STATE_RECONNECTING_FAST 5
 #define STATE_RECONNECTING_SLOW 6
+#define STATE_SUBSCRIBING 7
+#define STATE_MANUAL_RESTART_REQUIRED 8
 
 static uint8_t reconnect_attempts = 0;
 static unsigned long reconnect_ticks = 0;
 static unsigned long connecting_ticks = 0;
 static uint8_t reconnect_mode_slow = 0;
 static uint8_t alarm_sound = 0;
+
+#define MAX_TOTAL_RECONNECT_ATTEMPTS 8
 
 static uint8_t alarm_grace_ticks = 0;
 #define ALARM_HEARTBEAT_GRACE_TICKS 2 //skip the first 2 ticks of accelerated heartbit after the alarm 
@@ -77,6 +86,35 @@ static struct etimer periodic_timer;
 
 #define SAMPLE_PERIOD (CLOCK_SECOND/5)
 static struct etimer sampling_timer;
+
+// Batteria
+
+#define BATTERY_SIMULATION_PERIOD      (30 * CLOCK_SECOND)
+#define BATTERY_DRAIN_STEP_PERCENT     1                    //ogni 30 secondi si scarica dell'1%
+
+#define BATTERY_LOW_20                 20
+#define BATTERY_LOW_10                 10
+#define BATTERY_LOW_5                  5
+
+#define NORMAL_STATUS_INTERVAL         30
+#define LOW_BATTERY_STATUS_INTERVAL    120
+
+#define YELLOW_BLINK_ON_TIME           (5 * CLOCK_SECOND)
+#define YELLOW_BLINK_OFF_TIME          (3 * CLOCK_SECOND)
+
+static struct etimer battery_timer;
+static struct etimer yellow_blink_timer;
+
+static uint8_t battery_level = 100;
+
+static uint8_t battery_notified_20 = 0;
+static uint8_t battery_notified_10 = 0;
+static uint8_t battery_notified_5 = 0;
+
+static uint8_t low_battery_mode = 0;
+static uint8_t yellow_blink_active = 0;
+static uint8_t yellow_led_on = 0;
+
 
 //CoAP registration
 #define REGISTRATION_SERVER_EP "coap://[fd00::1]:5683"
@@ -117,6 +155,7 @@ static uint8_t window_index = 0;
 static uint8_t window_full = 0;
 static uint8_t force_fall_sequence = 0;  // 0 NORMAL, 1 FALL
 static uint8_t alarm_active = 0;
+static uint8_t force_sound_on_fall = 0;
 
 PROCESS(patient_node_process, "Patient node");
 AUTOSTART_PROCESSES(&patient_node_process);
@@ -187,29 +226,149 @@ static void publish_alarm_resolved(void) {
   mqtt_publish(&conn, NULL, alarm_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
 }
 
+static uint8_t chunk_contains(const uint8_t *chunk, uint16_t chunk_len, const char *needle) {
+  uint16_t needle_len = strlen(needle);
+  uint16_t i;
+
+  if(chunk == NULL || needle == NULL || needle_len == 0 || chunk_len < needle_len) {
+    return 0;
+  }
+
+  for(i = 0; i <= chunk_len - needle_len; i++) {
+    if(memcmp(chunk + i, needle, needle_len) == 0) {
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
 //handles MQTT messagges: if an ack on the alarm arrives, node status comes back to NORMAL
 static void pub_handler(const char *topic, uint16_t topic_len, const uint8_t *chunk, uint16_t chunk_len) {
-  if(topic_len == strlen(ack_topic) && strncmp(topic, ack_topic, topic_len) == 0) {
-    alarm_active= 0;
+
+  if(topic_len != strlen(ack_topic) || strncmp(topic, ack_topic, topic_len) != 0) {
+    return;
+  }
+
+  if(chunk_contains(chunk, chunk_len, "\"event\":\"CAREGIVER_CRITICAL\"")) {
+    force_sound_on_fall = 1;
+    LOG_WARN("Caregiver is CRITICAL: local sound will be enabled on fall\n");
+
+    if(alarm_active && !alarm_sound) {
+      alarm_sound = 1;
+      LOG_INFO("Alarm Sound ON because caregiver is critical\n");
+    }
+
+    return;
+  }
+
+  if(chunk_contains(chunk, chunk_len, "\"event\":\"CAREGIVER_RECOVERED\"")) {
+    force_sound_on_fall = 0;
+
+    if(alarm_sound && state == STATE_SUBSCRIBED) {
+      alarm_sound = 0;
+      LOG_INFO("Caregiver recovered: forced local sound disabled\n");
+    }
+
+    return;
+  }
+
+  if(chunk_contains(chunk, chunk_len, "\"event\":\"ACK\"")) {
+    alarm_active = 0;
     patient_state = PATIENT_NORMAL;
     force_fall_sequence = 0;
     reset_window();
     leds_single_off(LEDS_RED);
-    if(alarm_sound){
-          alarm_sound = 0;
-          LOG_INFO("Alarm Sound OFF\n");
-        }
+
+    if(alarm_sound) {
+      alarm_sound = 0;
+      LOG_INFO("Alarm Sound OFF\n");
+    }
+
     LOG_INFO("Allarme confermato dal caregiver\n");
     pending_alarm_resolved = 1;
+    return;
   }
+
+  LOG_INFO("Unknown message received on ack topic\n");
 }
 
 //publish MQTT heartbeat with status=NORMAL/FALL in JSON format
 //QoS is set to 0 since we are publishing periodic heartbits for communiting that the node is still alive
 static void publish_heartbeat(void) {
   const char *state_str = (patient_state == PATIENT_FALL) ? "FALL" : "NORMAL";
-  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"state\":\"%s\"}", client_id, state_str);
+  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"state\":\"%s\"}", client_id, state_str);
   mqtt_publish(&conn, NULL, heartbeat_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+}
+
+static uint8_t publish_battery_status(uint8_t level) {
+  mqtt_status_t publish_status;
+
+  if(state != STATE_SUBSCRIBED) {
+    LOG_INFO("Cannot publish battery status: MQTT not subscribed\n");
+    return 0;
+  }
+
+  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"event\":\"BATTERY_LOW\",\"battery\":%u,\"new_rate\":%u}", client_id, level, LOW_BATTERY_STATUS_INTERVAL);
+
+  publish_status = mqtt_publish(&conn, NULL, battery_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
+
+  if(publish_status == MQTT_STATUS_OK) {
+    LOG_WARN("Battery low notification sent: %u%%, new_rate=%us\n", level, LOW_BATTERY_STATUS_INTERVAL);
+    return 1;
+  }
+
+  LOG_WARN("Battery low notification could not be queued: status=%d\n", publish_status);
+  return 0;
+}
+
+static void enable_low_battery_mode(void) {
+  if(!low_battery_mode) {
+    low_battery_mode = 1;
+
+    publish_every_n_ticks = ((unsigned long)LOW_BATTERY_STATUS_INTERVAL * CLOCK_SECOND) / STATE_MACHINE_PERIODIC;
+
+    publish_counter = 0;
+
+    LOG_WARN("Low battery mode enabled: NORMAL heartbeat interval set to %u seconds\n", LOW_BATTERY_STATUS_INTERVAL);
+  }
+}
+
+static void check_battery_thresholds(void) {
+  if(battery_level <= BATTERY_LOW_20 && !battery_notified_20) {
+    enable_low_battery_mode();
+
+    if(publish_battery_status(battery_level)) {
+      battery_notified_20 = 1;
+    }
+
+    LOG_WARN("Battery threshold reached: 20%%\n");
+  }
+
+  if(battery_level <= BATTERY_LOW_10 && !battery_notified_10) {
+    enable_low_battery_mode();
+
+    yellow_blink_active = 1;
+    yellow_led_on = 1;
+    leds_single_on(LEDS_YELLOW);
+    etimer_set(&yellow_blink_timer, YELLOW_BLINK_ON_TIME);
+
+    if(publish_battery_status(battery_level)) {
+      battery_notified_10 = 1;
+    }
+
+    LOG_WARN("Battery threshold reached: 10%%. Yellow blinking enabled\n");
+  }
+
+  if(battery_level <= BATTERY_LOW_5 && !battery_notified_5) {
+    enable_low_battery_mode();
+
+    if(publish_battery_status(battery_level)) {
+      battery_notified_5 = 1;
+    }
+
+    LOG_WARN("Battery threshold reached: 5%%. Critical battery\n");
+  }
 }
 
 //FALL detected - QoS goes to 1 to receive MQTT ACK
@@ -234,15 +393,7 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
 
   case MQTT_EVENT_DISCONNECTED:
     LOG_INFO("MQTT disconnected. Reason %u\n", *((mqtt_event_t *)data));
-    reconnect_ticks = 0;
-    connecting_ticks = 0;
-
-    if(reconnect_attempts >= MAX_FAST_RECONNECT_ATTEMPTS) {
-      reconnect_mode_slow = 1;
-      state = STATE_RECONNECTING_SLOW;
-    } else {
-      state = STATE_RECONNECTING_FAST;
-    }
+    enter_reconnect_or_manual_restart();
     process_poll(&patient_node_process);
     break;
 
@@ -300,6 +451,29 @@ static void client_chunk_handler(coap_message_t *response) {
   coap_registered = 1;
 }
 
+static void enter_reconnect_or_manual_restart(void) {
+  reconnect_ticks = 0;
+  connecting_ticks = 0;
+
+  if(reconnect_attempts >= MAX_TOTAL_RECONNECT_ATTEMPTS) {
+    state = STATE_MANUAL_RESTART_REQUIRED;
+    LOG_ERR("MQTT reconnection failed after %u attempts. Manual power cycle required: switch patient node OFF and ON.\n",
+            reconnect_attempts);
+    return;
+  }
+
+  if(reconnect_attempts >= MAX_FAST_RECONNECT_ATTEMPTS) {
+    reconnect_mode_slow = 1;
+    state = STATE_RECONNECTING_SLOW;
+    LOG_INFO("MQTT reconnect: switching to slow mode\n");
+  } else {
+    reconnect_mode_slow = 0;
+    state = STATE_RECONNECTING_FAST;
+    LOG_INFO("MQTT reconnect: using fast mode\n");
+  }
+}
+
+
 
 PROCESS_THREAD(patient_node_process, ev, data) {
   coap_endpoint_t server_ep;
@@ -323,6 +497,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
   snprintf(heartbeat_topic, TOPIC_BUFFER_SIZE, "health/%s/heartbeat", client_id);
   snprintf(alarm_topic, TOPIC_BUFFER_SIZE, "alarm/%s", client_id);
   snprintf(ack_topic, TOPIC_BUFFER_SIZE, "alarm/%s/ack", client_id);
+  snprintf(battery_topic, TOPIC_BUFFER_SIZE, "battery/%s", client_id);
 
   
   // Bootstrap 
@@ -394,6 +569,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
 
   etimer_set(&periodic_timer, STATE_MACHINE_PERIODIC);
   etimer_set(&sampling_timer, SAMPLE_PERIOD);
+  etimer_set(&battery_timer, BATTERY_SIMULATION_PERIOD);
 
   while(1) {
     PROCESS_YIELD();
@@ -429,6 +605,37 @@ PROCESS_THREAD(patient_node_process, ev, data) {
       }
     }
 
+    if(ev == PROCESS_EVENT_TIMER && data == &battery_timer) {
+      if(battery_level > BATTERY_DRAIN_STEP_PERCENT) {
+        battery_level -= BATTERY_DRAIN_STEP_PERCENT;
+      } else {
+        battery_level = 0;
+      }
+
+      LOG_INFO("Simulated battery level: %u%%\n", battery_level);
+
+      check_battery_thresholds();
+
+      etimer_reset(&battery_timer);
+    }
+    
+    // LED giallo acceso 5 secondi
+    // LED giallo spento 3 secondi
+    // ripete
+    if(ev == PROCESS_EVENT_TIMER && data == &yellow_blink_timer) {
+      if(yellow_blink_active) {
+        if(yellow_led_on) {
+          leds_single_off(LEDS_YELLOW);
+          yellow_led_on = 0;
+          etimer_set(&yellow_blink_timer, YELLOW_BLINK_OFF_TIME);
+        } else {
+          leds_single_on(LEDS_YELLOW);
+          yellow_led_on = 1;
+          etimer_set(&yellow_blink_timer, YELLOW_BLINK_ON_TIME);
+        }
+      }
+    }
+
     //Sample Generation
     if(ev == PROCESS_EVENT_TIMER && data == &sampling_timer) {
       LOG_INFO("If ev == Sampling Timer\n");
@@ -460,7 +667,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
           LOG_INFO("FALL detected - current MQTT state: %u\n", state);
           LOG_INFO("Patient state changed to FALL\n");
           leds_single_on(LEDS_RED);
-          if(state != STATE_SUBSCRIBED && !alarm_sound){ // in tutti i casi in cui non può inviare messaggi 
+          if((state != STATE_SUBSCRIBED || force_sound_on_fall) && !alarm_sound){ // in tutti i casi in cui non può inviare messaggi, oppure se il caregiver è CRITICAL 
             alarm_sound = 1;
             LOG_INFO("Alarm Sound ON!\n"); // Simulare suono allarme
           }
@@ -505,7 +712,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
 
       if(state == STATE_NET_OK) {
         LOG_INFO("Connecting to MQTT broker\n");
-        memcpy(broker_address, broker_ip, strlen(broker_ip));
+        snprintf(broker_address, CONFIG_IP_ADDR_STR_LEN, "%s", broker_ip);
 
         mqtt_connect(&conn, broker_address, DEFAULT_BROKER_PORT,
                       (DEFAULT_PUBLISH_INTERVAL * 3) / CLOCK_SECOND,
@@ -518,31 +725,21 @@ PROCESS_THREAD(patient_node_process, ev, data) {
       if(state == STATE_CONNECTING) {
         connecting_ticks++;
 
-        if(connecting_ticks >= CONNECTING_TIMEOUT_INTERVAL){
-          LOG_INFO("MQTT Connecting timeout\n");
-
-          connecting_ticks = 0;
-          reconnect_ticks = 0;
-
+        if(connecting_ticks >= CONNECTING_TIMEOUT_INTERVAL) {
+          LOG_ERR("MQTT connecting timeout\n");
           mqtt_disconnect(&conn);
-
-          if(reconnect_attempts >= MAX_FAST_RECONNECT_ATTEMPTS) {
-            reconnect_mode_slow = 1;
-            state = STATE_RECONNECTING_SLOW;
-            LOG_INFO("Switching to slow reconnect mode\n");
-          } else {
-            state = STATE_RECONNECTING_FAST;
-            LOG_INFO("Retrying MQTT connection in fast reconnect mode\n");
-          }
+          enter_reconnect_or_manual_restart();
         }
       }
 
       if(state == STATE_CONNECTED) {
         status = mqtt_subscribe(&conn, NULL, ack_topic, MQTT_QOS_LEVEL_0);
+
         if(status == MQTT_STATUS_OUT_QUEUE_FULL) {
           LOG_ERR("Tried to subscribe but command queue was full!\n");
           PROCESS_EXIT();
         }
+        state = STATE_SUBSCRIBING;
       }
 
       if(state == STATE_SUBSCRIBED) {
@@ -565,48 +762,36 @@ PROCESS_THREAD(patient_node_process, ev, data) {
         }
       } 
 
-      if(state == STATE_RECONNECTING_FAST) {
+      if(state == STATE_RECONNECTING_FAST || state == STATE_RECONNECTING_SLOW) {
+        unsigned long interval;
+
+        interval = (state == STATE_RECONNECTING_FAST) ? FAST_RECONNECT_INTERVAL : SLOW_RECONNECT_INTERVAL;
+
         reconnect_ticks++;
 
-        if(reconnect_ticks >= FAST_RECONNECT_INTERVAL){
-
+        if(reconnect_ticks >= interval) {
           reconnect_ticks = 0;
 
-          if(have_connectivity()){
-            
-            LOG_INFO("Reconnect attempt %u to MQTT broker\n", reconnect_attempts + 1);
-
-            memcpy(broker_address, broker_ip, strlen(broker_ip));
+          if(have_connectivity()) {
             reconnect_attempts++;
+
+            LOG_INFO("MQTT reconnect attempt %u/%u\n", reconnect_attempts, MAX_TOTAL_RECONNECT_ATTEMPTS);
+
+            snprintf(broker_address, CONFIG_IP_ADDR_STR_LEN, "%s", broker_ip);
+
             connecting_ticks = 0;
+
             mqtt_connect(&conn, broker_address, DEFAULT_BROKER_PORT, (DEFAULT_PUBLISH_INTERVAL * 3) / CLOCK_SECOND, MQTT_CLEAN_SESSION_ON);
+
             state = STATE_CONNECTING;
-          }
-          else {
+          } else {
             LOG_INFO("No IPv6 route yet. Waiting before next reconnect attempt\n");
           }
         }
       }
 
-      if(state == STATE_RECONNECTING_SLOW) {
-        reconnect_ticks++;
-
-        if(reconnect_ticks >= SLOW_RECONNECT_INTERVAL) {
-          reconnect_ticks = 0;
-
-          if(have_connectivity()) {
-            LOG_INFO("Reconnect attempt %u to MQTT broker\n", reconnect_attempts + 1);
-
-            memcpy(broker_address, broker_ip, strlen(broker_ip));
-            mqtt_connect(&conn, broker_address, DEFAULT_BROKER_PORT, (DEFAULT_PUBLISH_INTERVAL * 3) / CLOCK_SECOND, MQTT_CLEAN_SESSION_ON);
-            reconnect_attempts++;
-            connecting_ticks = 0;
-            state = STATE_CONNECTING;
-          }
-          else {
-            LOG_INFO("Network routing unavailable\n");
-          }
-        }
+      if(state == STATE_MANUAL_RESTART_REQUIRED) {
+        LOG_ERR("Patient node offline. Manual restart required: switch node OFF and ON. MQTT retries stopped to save battery.\n");
       }
 
       etimer_set(&periodic_timer, STATE_MACHINE_PERIODIC);

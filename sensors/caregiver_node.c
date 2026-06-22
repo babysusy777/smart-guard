@@ -21,6 +21,9 @@
 
 #define LOG_MODULE "caregiver"
 #define LOG_LEVEL  LOG_LEVEL_INFO
+#ifndef LEDS_YELLOW
+#define LEDS_YELLOW LEDS_GREEN
+#endif
 
 //MQTT BROKER
 #define MQTT_CLIENT_BROKER_IP_ADDR "fd00::1"
@@ -38,9 +41,11 @@ static const char *broker_ip = MQTT_CLIENT_BROKER_IP_ADDR;
 
 static char client_id[BUFFER_SIZE];
 static char heartbeat_topic[TOPIC_BUFFER_SIZE];
+static char battery_topic[TOPIC_BUFFER_SIZE];
 static char app_buffer[APP_BUFFER_SIZE];
 static char broker_address[CONFIG_IP_ADDR_STR_LEN];
 static char ack_topic_buf[TOPIC_BUFFER_SIZE];
+
 
 static struct mqtt_connection conn;
 mqtt_status_t status;
@@ -54,6 +59,7 @@ static uint8_t state;
 #define STATE_RECONNECTING_FAST 5
 #define STATE_RECONNECTING_SLOW 6
 #define STATE_MANUAL_RESTART_REQUIRED 7
+#define STATE_SUBSCRIBING 8
 
 #define STATE_MACHINE_PERIODIC (CLOCK_SECOND >> 1)
 static struct etimer periodic_timer;
@@ -77,6 +83,31 @@ static unsigned long connecting_ticks = 0;
 #define CAREGIVER_DEFAULT_PUBLISH_INTERVAL (60 * CLOCK_SECOND)
 static unsigned long publish_counter = 0;
 static unsigned long publish_every_n_ticks = CAREGIVER_DEFAULT_PUBLISH_INTERVAL / STATE_MACHINE_PERIODIC;
+
+#define CAREGIVER_LOW_BATTERY_INTERVAL     180
+
+#define BATTERY_SIMULATION_PERIOD          (30 * CLOCK_SECOND)
+#define BATTERY_DRAIN_STEP_PERCENT         1
+
+#define BATTERY_LOW_20                     20
+#define BATTERY_LOW_10                     10
+#define BATTERY_LOW_5                      5
+
+#define YELLOW_BLINK_ON_TIME               (5 * CLOCK_SECOND)
+#define YELLOW_BLINK_OFF_TIME              (3 * CLOCK_SECOND)
+
+static struct etimer battery_timer;
+static struct etimer yellow_blink_timer;
+
+static uint8_t battery_level = 100;
+
+static uint8_t battery_notified_20 = 0;
+static uint8_t battery_notified_10 = 0;
+static uint8_t battery_notified_5 = 0;
+
+static uint8_t low_battery_mode = 0;
+static uint8_t yellow_blink_active = 0;
+static uint8_t yellow_led_on = 0;
 
 #define MAX_COAP_REG_ATTEMPTS 3
 #define COAP_REG_RETRY_INTERVAL (5 * CLOCK_SECOND)
@@ -245,48 +276,162 @@ static int chunk_contains(const uint8_t *chunk, uint16_t chunk_len, const char *
   return 0;
 }
 
+static void enable_low_battery_mode(void) {
+  if(!low_battery_mode) {
+    low_battery_mode = 1;
+
+    publish_every_n_ticks =
+      ((unsigned long)CAREGIVER_LOW_BATTERY_INTERVAL * CLOCK_SECOND) /
+      STATE_MACHINE_PERIODIC;
+
+    publish_counter = 0;
+
+    LOG_WARN("Caregiver low battery mode enabled: heartbeat interval changed to %us\n",
+             CAREGIVER_LOW_BATTERY_INTERVAL);
+  }
+}
+
+static uint8_t publish_battery_status(uint8_t level) {
+  mqtt_status_t publish_status;
+
+  if(state != STATE_SUBSCRIBED) {
+    LOG_INFO("Cannot publish caregiver battery status: MQTT not subscribed\n");
+    return 0;
+  }
+
+  snprintf(app_buffer, APP_BUFFER_SIZE,
+           "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"event\":\"BATTERY_LOW\",\"battery\":%u,\"new_rate\":%u}",
+           client_id,
+           level,
+           CAREGIVER_LOW_BATTERY_INTERVAL);
+
+  publish_status = mqtt_publish(&conn, NULL, battery_topic,
+                                (uint8_t *)app_buffer,
+                                strlen(app_buffer),
+                                MQTT_QOS_LEVEL_1,
+                                MQTT_RETAIN_OFF);
+
+  if(publish_status == MQTT_STATUS_OK) {
+    LOG_WARN("Caregiver battery low notification sent: %u%%, new_rate=%us\n",
+             level,
+             CAREGIVER_LOW_BATTERY_INTERVAL);
+    return 1;
+  }
+
+  LOG_WARN("Caregiver battery low notification could not be queued: status=%d\n",
+           publish_status);
+  return 0;
+}
+
+static void check_battery_thresholds(void) {
+  if(battery_level <= BATTERY_LOW_20 && !battery_notified_20) {
+    enable_low_battery_mode();
+
+    yellow_blink_active = 1;
+    yellow_led_on = 1;
+    leds_single_on(LEDS_YELLOW);
+    etimer_set(&yellow_blink_timer, YELLOW_BLINK_ON_TIME);
+
+    if(publish_battery_status(battery_level)) {
+      battery_notified_20 = 1;
+    }
+
+    LOG_WARN("Caregiver battery threshold reached: 20%%. Yellow blinking enabled\n");
+  }
+
+  if(battery_level <= BATTERY_LOW_10 && !battery_notified_10) {
+    enable_low_battery_mode();
+
+    if(publish_battery_status(battery_level)) {
+      battery_notified_10 = 1;
+    }
+
+    LOG_WARN("Caregiver battery threshold reached: 10%%\n");
+  }
+
+  if(battery_level <= BATTERY_LOW_5 && !battery_notified_5) {
+    enable_low_battery_mode();
+
+    if(publish_battery_status(battery_level)) {
+      battery_notified_5 = 1;
+    }
+
+    LOG_WARN("Caregiver battery threshold reached: 5%%\n");
+  }
+}
 
 //handles MQTT messages: a FALL event activates caregiver notification
 //a false alarm form the patient closes it 
 static void pub_handler(const char *topic, uint16_t topic_len, const uint8_t *chunk, uint16_t chunk_len) {
   char node_id[NODE_ID_BUFFER_SIZE];
 
-  //log x vedere se il payload è ok
-  LOG_INFO("chunk_len=%u | ", chunk_len);
-  for(int i = 0; i < chunk_len; i++) {
-    printf("%02x ", chunk[i]);
+  if(strncmp(topic, "alarm/", 6) != 0) {
+    return;
   }
-  printf("\n");
 
-  if(strncmp(topic, "alarm/", 6) == 0) {
-    LOG_INFO("entro nell'if");
-
-    if(strstr(topic, "/ack") != NULL) {
-      LOG_INFO("An ACK is arrived! Return\n");
-      return;  //an ack is arrived
-    }
-
-    if(!extract_node_id(chunk, chunk_len, node_id, NODE_ID_BUFFER_SIZE)) {
-      LOG_INFO("Malformed payload, ignore! Return\n");
-      return;  //malformed paylod -> ignore
-    }
-
-    if(chunk_contains(chunk, chunk_len, "\"event\":\"FALL\"")) {
-      LOG_INFO("Ho ricevuto un messaggio FALL");
-      alarm_queue_push(node_id);
-      LOG_INFO("Inserisco il messaggio FALL nella coda");
-      start_alarm_blink();
-      LOG_INFO("Allarme FALL ricevuto da %s (in coda: %d)\n", node_id, queue_count);
-
-    } else if(chunk_contains(chunk, chunk_len, "\"event\":\"RESOLVED\"")) {
-      alarm_queue_remove(node_id);
-      LOG_INFO("Allarme di %s risolto (in coda: %d)\n", node_id, queue_count);
-
-      if(queue_count == 0) {
-        stop_alarm_blink();
-      }
-    }
+  if(strstr(topic, "/ack") != NULL) {
+    LOG_INFO("ACK topic received by caregiver, ignored\n");
+    return;
   }
+
+  if(!extract_node_id(chunk, chunk_len, node_id, NODE_ID_BUFFER_SIZE)) {
+    LOG_INFO("Malformed payload, ignored\n");
+    return;
+  }
+
+  if(chunk_contains(chunk, chunk_len, "\"event\":\"FALL\"")) {
+    LOG_INFO("FALL alarm received from %s\n", node_id);
+
+    alarm_queue_push(node_id);
+    start_alarm_blink();
+
+    LOG_INFO("Alarm inserted in queue. Queue size: %d\n", queue_count);
+    return;
+  }
+
+  if(chunk_contains(chunk, chunk_len, "\"event\":\"RESOLVED\"")) {
+    LOG_INFO("Alarm resolved by patient %s\n", node_id);
+
+    alarm_queue_remove(node_id);
+
+    if(queue_count == 0) {
+      stop_alarm_blink();
+    }
+
+    return;
+  }
+
+  if(chunk_contains(chunk, chunk_len, "\"event\":\"NODE_CRITICAL\"")) {
+    LOG_ERR("Patient node %s is CRITICAL: heartbeat missing\n", node_id);
+
+    alarm_queue_push(node_id);
+    start_alarm_blink();
+
+    return;
+  }
+
+  if(chunk_contains(chunk, chunk_len, "\"event\":\"NODE_RECOVERED\"")) {
+    LOG_INFO("Patient node %s recovered: heartbeat restored\n", node_id);
+
+    alarm_queue_remove(node_id);
+
+    if(queue_count == 0) {
+      stop_alarm_blink();
+    }
+
+    return;
+  }
+
+  if(chunk_contains(chunk, chunk_len, "\"event\":\"BATTERY_LOW\"")) {
+    LOG_WARN("Patient node %s has low battery. Notification only, no ACK required.\n", node_id);
+    // IMPORTANT:
+    // BATTERY_LOW is not pushed into alarm_queue. The caregiver does not need to press the button.
+    // No ACK is sent for this event.
+     
+    return;
+  }
+
+  LOG_INFO("Unknown event received on alarm topic\n");
 }
 
 //callback function called when an MQTT event arrives
@@ -340,8 +485,13 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
 
 //heartbeat is more relaxed than patient one: it is needed to report to the Cloud App that the node is still active
 static void publish_heartbeat(void) {
-  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"caregiver\"}", client_id);
-  mqtt_publish(&conn, NULL, heartbeat_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+  if(low_battery_mode) {
+    snprintf(app_buffer, APP_BUFFER_SIZE,"{\"node_id\":\"%s\",\"type\":\"caregiver\",\"battery\":%u}",client_id,battery_level);
+  } else {
+    snprintf(app_buffer, APP_BUFFER_SIZE,"{\"node_id\":\"%s\",\"type\":\"caregiver\"}",client_id);
+  }
+
+  mqtt_publish(&conn, NULL, heartbeat_topic,(uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 }
 
 //used to confirm that the caregiver has seen the alarm
@@ -349,8 +499,10 @@ static void publish_heartbeat(void) {
 //it stops linking on the patient node
 static void publish_ack(const char *node_id) {
   snprintf(ack_topic_buf, TOPIC_BUFFER_SIZE, "alarm/%s/ack", node_id);
-  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"ack_by\":\"caregiver\"}", node_id);
-  mqtt_publish(&conn, NULL, ack_topic_buf, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
+
+  snprintf(app_buffer, APP_BUFFER_SIZE,"{\"node_id\":\"%s\",\"event\":\"ACK\",\"ack_by\":\"caregiver\",\"caregiver_id\":\"%s\"}",node_id,client_id);
+
+  mqtt_publish(&conn, NULL, ack_topic_buf,(uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
 }
 
 //callback to handle response to CoAP registration (debug/logging)
@@ -386,6 +538,7 @@ PROCESS_THREAD(caregiver_process, ev, data)
   LOG_INFO("Caregiver node process started (%s)\n", client_id);
 
   snprintf(heartbeat_topic, TOPIC_BUFFER_SIZE, "health/%s/heartbeat", client_id);
+  snprintf(battery_topic, TOPIC_BUFFER_SIZE, "battery/%s", client_id);
 
   // Bootstrap 
   //The node waits for IPv6/RPL connectivity before attempting CoAP registration
@@ -456,6 +609,7 @@ PROCESS_THREAD(caregiver_process, ev, data)
 
   etimer_set(&periodic_timer, STATE_MACHINE_PERIODIC);
   etimer_set(&blink_timer, ALARM_BLINK_PERIOD);
+  etimer_set(&battery_timer, BATTERY_SIMULATION_PERIOD);
 
   while(1) {
     PROCESS_YIELD();
@@ -483,6 +637,34 @@ PROCESS_THREAD(caregiver_process, ev, data)
           }
           //otherwise the LED blinking continues because there is at least one alarm in the queue 
         }
+    }
+
+    if(ev == PROCESS_EVENT_TIMER && data == &battery_timer) {
+      if(battery_level > BATTERY_DRAIN_STEP_PERCENT) {
+        battery_level -= BATTERY_DRAIN_STEP_PERCENT;
+      } else {
+        battery_level = 0;
+      }
+
+      LOG_INFO("Caregiver simulated battery level: %u%%\n", battery_level);
+
+      check_battery_thresholds();
+
+      etimer_reset(&battery_timer);
+    }
+
+    if(ev == PROCESS_EVENT_TIMER && data == &yellow_blink_timer) {
+      if(yellow_blink_active) {
+        if(yellow_led_on) {
+          leds_single_off(LEDS_YELLOW);
+          yellow_led_on = 0;
+          etimer_set(&yellow_blink_timer, YELLOW_BLINK_OFF_TIME);
+        } else {
+          leds_single_on(LEDS_YELLOW);
+          yellow_led_on = 1;
+          etimer_set(&yellow_blink_timer, YELLOW_BLINK_ON_TIME);
+        }
+      }
     }
 
     //red LED blinks when the alarm is active
@@ -525,12 +707,14 @@ PROCESS_THREAD(caregiver_process, ev, data)
       }
 
       if(state == STATE_CONNECTED) {
-        //subscribes to all patients' alarms using a wildcard
         status = mqtt_subscribe(&conn, NULL, "alarm/#", MQTT_QOS_LEVEL_1);
+
         if(status == MQTT_STATUS_OUT_QUEUE_FULL) {
           LOG_ERR("Tried to subscribe but command queue was full!\n");
           PROCESS_EXIT();
         }
+
+        state = STATE_SUBSCRIBING;
       }
 
       if(state == STATE_SUBSCRIBED) {

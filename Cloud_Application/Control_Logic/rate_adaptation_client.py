@@ -53,8 +53,9 @@ def get_registered_nodes():
 
 
 #used by failure_detection to understand actual rate
-def write_config_rate(node_id, rate):
-    point = Point("config").tag("node_id", node_id).field("rate", rate)
+def write_config_rate(node_id, rate, reason="congestion_adaptation"):
+    point = (Point("config").tag("node_id", node_id).field("rate", int(rate)).field("reason", reason))
+
     write_api.write(bucket=BUCKET, org=ORG, record=point)
 
 
@@ -92,6 +93,29 @@ def get_active_alarms():
             if record.get_value() == "FALL":
                 active.add(record.values.get("node_id"))
     return active
+
+def get_low_battery_nodes():
+    flux_query = f'''
+    from(bucket: "{BUCKET}")
+      |> range(start: -24h)
+      |> filter(fn: (r) => r._measurement == "battery")
+      |> filter(fn: (r) => r._field == "battery")
+      |> group(columns: ["node_id"])
+      |> last()
+    '''
+
+    tables = query_api.query(flux_query, org=ORG)
+
+    result = {}
+    for table in tables:
+        for record in table.records:
+            node_id = record.values.get("node_id")
+            battery = record.get_value()
+
+            if node_id is not None and battery is not None:
+                result[node_id] = int(battery)
+
+    return result
 
 
 #GET /config on a node, used at startup to discover its current rate
@@ -137,7 +161,7 @@ async def initialize_node_state():
     for node_id, ip_address in nodes.items():
         rate = await coap_get_config(ip_address)
         node_state[node_id] = {"ip": ip_address, "rate": rate, "discovered_at": now, "default_rate": rate }
-        write_config_rate(node_id, rate)
+        write_config_rate(node_id, rate, reason="initial_discovery")
         print(f"[CoAP_actuator] Discovered {node_id} ({ip_address}): rate={rate}s")
 
 
@@ -145,21 +169,38 @@ async def initialize_node_state():
 #if the ratio is below threshold, doubles the rate and PUT /config to the node
 async def check_congestion_once():
     nodes = get_registered_nodes()
+
     for node_id, ip_address in nodes.items():
         if node_id not in node_state:
             rate = await coap_get_config(ip_address)
-            node_state[node_id] = {"ip": ip_address, "rate": rate, "discovered_at": time.time(), "default_rate": rate}
-            write_config_rate(node_id, rate) 
+
+            node_state[node_id] = {
+                "ip": ip_address,
+                "rate": rate,
+                "discovered_at": time.time(),
+                "default_rate": rate
+            }
+
+            write_config_rate(node_id, rate, reason="initial_discovery")
+
+    active_alarms = get_active_alarms()
+    low_battery_nodes = get_low_battery_nodes()
 
     for node_id, state in node_state.items():
-        active_alarms = get_active_alarms()
+
+        if node_id in low_battery_nodes:
+            print(f"[CoAP_actuator] Skipping {node_id}: low battery "
+                  f"({low_battery_nodes[node_id]}%). Congestion adaptation disabled.")
+            continue
+
         elapsed_since_discovery = time.time() - state["discovered_at"]
 
         effective_rate = state["rate"]
+
         if node_id in active_alarms:
             effective_rate = max(state["rate"] / ALARM_SPEEDUP_FACTOR, 0.5)
-        
-        #do not control a node until he sent at least 2 heartbits
+
+        # do not control a node until it has sent at least 2 heartbeats
         if elapsed_since_discovery < effective_rate * 2:
             continue
 
@@ -170,22 +211,31 @@ async def check_congestion_once():
 
         if ratio < EXPECTED_RATIO_THRESHOLD:
             new_rate = min(state["rate"] * 2, MAX_RATE_SECONDS)
+
             if new_rate != state["rate"]:
                 print(f"[CoAP_actuator] Congestion detected for {node_id}: "
                       f"received {received}/{expected:.0f} heartbeats "
                       f"(ratio={ratio:.2f}). Raising rate {state['rate']}s -> {new_rate}s")
+
                 await coap_put_config(state["ip"], new_rate)
+
                 state["rate"] = new_rate
-                write_config_rate(node_id, new_rate) 
+
+                write_config_rate(node_id,new_rate,reason="congestion_detected")
+
         else:
-            #no congestions are present, so if the rate is over the default we reduce it 
+            # no congestion is present, so if the rate is over the default we reduce it
             if state["rate"] > state["default_rate"]:
                 new_rate = max(state["rate"] // 2, state["default_rate"])
+
                 print(f"[CoAP_actuator] No congestion for {node_id} "
-                    f"(ratio={ratio:.2f}). Lowering rate {state['rate']}s -> {new_rate}s")
+                      f"(ratio={ratio:.2f}). Lowering rate {state['rate']}s -> {new_rate}s")
+
                 await coap_put_config(state["ip"], new_rate)
+
                 state["rate"] = new_rate
-                write_config_rate(node_id, new_rate) 
+
+                write_config_rate(node_id, new_rate, reason="congestion_recovered")
 
 
 async def main():
