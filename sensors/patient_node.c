@@ -71,9 +71,8 @@ static unsigned long connecting_ticks = 0;
 static uint8_t reconnect_mode_slow = 0;
 static uint8_t alarm_sound = 0;
 
-static uint8_t pending_fall_alarm = 0;
+
 #define FALL_ALARM_RETRY_INTERVAL (2 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
-static unsigned long fall_alarm_retry_counter = 0;
 
 #define MAX_TOTAL_RECONNECT_ATTEMPTS 32
 
@@ -917,50 +916,6 @@ PROCESS_THREAD(patient_node_process, ev, data) {
           }
         }
       }
-
-        if(!mqtt_publish_attempted && pending_battery_notify) {
-          battery_notify_retry_counter++;
-
-          if(battery_notify_retry_counter >= BATTERY_NOTIFY_RETRY_INTERVAL) {
-            battery_notify_retry_counter = 0;
-            mqtt_publish_attempted = 1;
-
-            if(publish_battery_status(pending_battery_level)) {
-              pending_battery_notify = 0;
-              LOG_WARN("Pending patient battery notification delivered\n");
-            } else {
-              LOG_WARN("Pending patient battery notification not sent yet: MQTT queue busy\n");
-            }
-          }
-        }
-
-        if(!mqtt_publish_attempted && pending_alarm_resolved) {
-          mqtt_publish_attempted = 1;
-
-          if(publish_alarm_resolved()) {
-            pending_alarm_resolved = 0;
-            LOG_WARN("Pending RESOLVED delivered\n");
-          } else {
-            LOG_WARN("Pending RESOLVED not sent yet: MQTT queue busy\n");
-          }
-        }
-
-        if(!mqtt_publish_attempted && !pending_fall_alarm) {
-          publish_counter++;
-
-          if(alarm_active && alarm_grace_ticks > 0) {
-            alarm_grace_ticks--;
-          } else if(alarm_active) {
-            if(publish_counter >= get_alarm_interval_ticks()) {
-              publish_counter = 0;
-              publish_heartbeat();
-            }
-          } else if(publish_counter >= publish_every_n_ticks) {
-            publish_counter = 0;
-            publish_heartbeat();
-          }
-        }
-      } 
 
       if(state == STATE_RECONNECTING_FAST || state == STATE_RECONNECTING_SLOW) {
         unsigned long interval;
