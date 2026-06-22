@@ -110,7 +110,7 @@ static struct etimer sampling_timer;
 static struct etimer battery_timer;
 static struct etimer yellow_blink_timer;
 
-static uint8_t battery_level = 25;
+static uint8_t battery_level = 50;
 
 static uint8_t battery_notified_20 = 0;
 static uint8_t battery_notified_10 = 0;
@@ -852,6 +852,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
       if(state == STATE_SUBSCRIBED) {
         uint8_t mqtt_publish_attempted = 0;
 
+        /* 1. FALL pending: massima priorità */
         if(pending_fall_alarm) {
           fall_alarm_retry_counter++;
 
@@ -867,6 +868,58 @@ PROCESS_THREAD(patient_node_process, ev, data) {
             }
           }
         }
+
+        /* 2. RESOLVED pending */
+        if(!mqtt_publish_attempted && pending_alarm_resolved) {
+          resolved_retry_counter++;
+
+          if(resolved_retry_counter >= RESOLVED_RETRY_INTERVAL) {
+            resolved_retry_counter = 0;
+            mqtt_publish_attempted = 1;
+
+            if(publish_alarm_resolved()) {
+              pending_alarm_resolved = 0;
+              LOG_WARN("Pending RESOLVED delivered\n");
+            } else {
+              LOG_WARN("Pending RESOLVED not sent yet: MQTT queue busy\n");
+            }
+          }
+        }
+
+        /* 3. BATTERY pending */
+        if(!mqtt_publish_attempted && pending_battery_notify) {
+          battery_notify_retry_counter++;
+
+          if(battery_notify_retry_counter >= BATTERY_NOTIFY_RETRY_INTERVAL) {
+            battery_notify_retry_counter = 0;
+            mqtt_publish_attempted = 1;
+
+            if(publish_battery_status(pending_battery_level)) {
+              pending_battery_notify = 0;
+              LOG_WARN("Pending battery notification delivered\n");
+            } else {
+              LOG_WARN("Pending battery notification not sent yet: MQTT queue busy\n");
+            }
+          }
+        }
+
+        /* 4. Heartbeat solo se non ho appena tentato altro */
+        if(!mqtt_publish_attempted) {
+          publish_counter++;
+
+          if(alarm_active && alarm_grace_ticks > 0) {
+            alarm_grace_ticks--;
+          } else if(alarm_active) {
+            if(publish_counter >= get_alarm_interval_ticks()) {
+              publish_counter = 0;
+              publish_heartbeat();
+            }
+          } else if(publish_counter >= publish_every_n_ticks) {
+            publish_counter = 0;
+            publish_heartbeat();
+          }
+        }
+      }
 
         if(!mqtt_publish_attempted && pending_battery_notify) {
           battery_notify_retry_counter++;
