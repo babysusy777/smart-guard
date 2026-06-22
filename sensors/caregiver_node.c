@@ -109,6 +109,8 @@ static uint8_t low_battery_mode = 0;
 static uint8_t yellow_blink_active = 0;
 static uint8_t yellow_led_on = 0;
 static uint8_t battery_dead = 0;
+static uint8_t pending_battery_level = 0;
+static uint8_t pending_battery_notify = 0;
 
 #define MAX_COAP_REG_ATTEMPTS 3
 #define COAP_REG_RETRY_INTERVAL (5 * CLOCK_SECOND)
@@ -358,13 +360,14 @@ static void check_battery_thresholds(void) {
 static void check_battery_thresholds(void) {
   if(battery_level <= BATTERY_LOW_5 && !battery_notified_5) {
     enable_low_battery_mode();
-    
+
     battery_notified_5 = 1;
     battery_notified_10 = 1;
     battery_notified_20 = 1;
     pending_battery_level = battery_level;
     pending_battery_notify = 1;
     LOG_WARN("Battery threshold reached: 5%%\n");
+    
   } else if(battery_level <= BATTERY_LOW_10 && !battery_notified_10) {
     enable_low_battery_mode();
 
@@ -373,8 +376,10 @@ static void check_battery_thresholds(void) {
     pending_battery_level = battery_level;
     pending_battery_notify = 1;
     LOG_WARN("Battery threshold reached: 10%%\n");
+
   } else if(battery_level <= BATTERY_LOW_20 && !battery_notified_20) {
     enable_low_battery_mode();
+
     battery_notified_20 = 1;
     pending_battery_level = battery_level;
     pending_battery_notify = 1;
@@ -763,6 +768,11 @@ PROCESS_THREAD(caregiver_process, ev, data)
       }
 
       if(state == STATE_SUBSCRIBED) {
+        if(pending_battery_notify) {
+          if(publish_battery_status(pending_battery_level)) {
+            pending_battery_notify = 0;
+          }
+        }
         publish_counter++;
         if(publish_counter >= publish_every_n_ticks) {
           publish_counter = 0;
