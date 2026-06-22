@@ -116,6 +116,8 @@ static uint8_t low_battery_mode = 0;
 static uint8_t yellow_blink_active = 0;
 static uint8_t yellow_led_on = 0;
 static uint8_t battery_dead = 0;
+static uint8_t pending_battery_level = 0;
+static uint8_t pendig_battery_notify = 0;
 
 
 //CoAP registration
@@ -793,6 +795,11 @@ PROCESS_THREAD(patient_node_process, ev, data) {
       }
 
       if(state == STATE_SUBSCRIBED) {
+        if(pending_battery_notify) {
+          if(publish_battery_status(pending_battery_level)) {
+            pending_battery_notify = 0;
+          }
+        }
         if(pending_alarm_resolved) {
           pending_alarm_resolved = 0;
           publish_alarm_resolved();
