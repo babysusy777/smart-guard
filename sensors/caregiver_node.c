@@ -539,7 +539,7 @@ static uint8_t publish_battery_status(uint8_t level) {
   }
 
   snprintf(battery_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"event\":\"BATTERY_LOW\",\"battery\":%u,\"new_rate\":%u}", client_id, level, CAREGIVER_LOW_BATTERY_INTERVAL);
-  publish_status = mqtt_publish(&conn, NULL, battery_topic, (uint8_t *)battery_buffer, strlen(battery_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
+  publish_status = mqtt_publish(&conn, NULL, battery_topic, (uint8_t *)battery_buffer, strlen(battery_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 
   if(publish_status == MQTT_STATUS_OK) {
     LOG_WARN("Battery low notification sent: %u%%, new_rate=%us\n", level, CAREGIVER_LOW_BATTERY_INTERVAL);
