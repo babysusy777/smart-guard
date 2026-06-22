@@ -123,7 +123,6 @@ static uint8_t battery_dead = 0;
 static uint8_t pending_battery_level = 0;
 static uint8_t pending_battery_notify = 0;
 #define BATTERY_NOTIFY_RETRY_INTERVAL (10 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
-
 static unsigned long battery_notify_retry_counter = 0;
 
 
@@ -139,6 +138,13 @@ static uint8_t coap_registered = 0;
 static uint8_t coap_registration_attempts = 0;
 
 static uint8_t pending_alarm_resolved = 0; 
+static uint8_t pending_fall_alarm = 0;
+
+#define FALL_ALARM_RETRY_INTERVAL (2 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
+static unsigned long fall_alarm_retry_counter = 0;
+
+#define RESOLVED_RETRY_INTERVAL (5 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
+static unsigned long resolved_retry_counter = 0;
 
 #define ALARM_SPEEDUP_FACTOR 60 //alarm interval becomes equal to publish_every_n_ticks / FACTOR 
 //FACTOR is sent by cloud application to regulate the congestion
@@ -235,15 +241,9 @@ void set_publish_period(int seconds) {
 static uint8_t publish_alarm_resolved(void) {
   mqtt_status_t publish_status;
 
-  snprintf(app_buffer, APP_BUFFER_SIZE,
-           "{\"node_id\":\"%s\",\"event\":\"RESOLVED\"}",
-           client_id);
+  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"event\":\"RESOLVED\"}", client_id);
 
-  publish_status = mqtt_publish(&conn, NULL, alarm_topic,
-                                (uint8_t *)app_buffer,
-                                strlen(app_buffer),
-                                MQTT_QOS_LEVEL_1,
-                                MQTT_RETAIN_OFF);
+  publish_status = mqtt_publish(&conn, NULL, alarm_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
 
   if(publish_status == MQTT_STATUS_OK) {
     LOG_WARN("RESOLVED event queued successfully\n");
@@ -327,10 +327,7 @@ static uint8_t publish_heartbeat(void) {
   const char *state_str = (patient_state == PATIENT_FALL) ? "FALL" : "NORMAL";
   mqtt_status_t publish_status;
 
-  snprintf(app_buffer, APP_BUFFER_SIZE,
-           "{\"node_id\":\"%s\",\"type\":\"patient\",\"state\":\"%s\"}",
-           client_id,
-           state_str);
+  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"state\":\"%s\"}", client_id, state_str);
 
   publish_status = mqtt_publish(&conn, NULL, heartbeat_topic,
                                 (uint8_t *)app_buffer,
@@ -999,7 +996,6 @@ PROCESS_THREAD(patient_node_process, ev, data) {
 
       etimer_set(&periodic_timer, STATE_MACHINE_PERIODIC);
     }
-  }
 
   PROCESS_END();
 }
