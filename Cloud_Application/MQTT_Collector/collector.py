@@ -98,7 +98,8 @@ def notify_caregiver_patient_battery(client, patient_id, battery, new_rate=None)
         "node_id": patient_id,
         "event": "BATTERY_LOW",
         "battery": int(battery),
-        "requires_ack": False
+        "requires_ack": False,
+        "source": "collector"
     }
 
     if new_rate is not None:
@@ -156,6 +157,10 @@ def on_message(client, userdata, msg):
             print(f"[Alarm] node_id={node_id} event={event}")
 
         elif event in ("BATTERY_LOW", "NODE_CRITICAL", "NODE_RECOVERED"):
+
+            if event == "BATTERY_LOW" and payload.get("source") == "collector":
+                return
+
             write_notification(node_id, event, payload)
             print(f"[Notification] node_id={node_id} event={event}")
 
