@@ -542,7 +542,7 @@ static uint8_t publish_battery_status(uint8_t level) {
   publish_status = mqtt_publish(&conn, NULL, battery_topic, (uint8_t *)battery_buffer, strlen(battery_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
 
   if(publish_status == MQTT_STATUS_OK) {
-    LOG_WARN("Battery low notification sent: %u%%, new_rate=%us\n", level, LOW_BATTERY_STATUS_INTERVAL);
+    LOG_WARN("Battery low notification sent: %u%%, new_rate=%us\n", level, CAREGIVER_LOW_BATTERY_INTERVAL);
     return 1;
   }
 
