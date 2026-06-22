@@ -229,8 +229,9 @@ void set_publish_period(int seconds) {
 //used by the patient to notify that he/she is ok 
 //used also by the caregiver that has served the alarm request
 static uint8_t publish_alarm_resolved(void) {
+  mqtt_status_t st;
   snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"event\":\"RESOLVED\"}", client_id);
-  mqtt_publish(&conn, NULL, alarm_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
+  st = mqtt_publish(&conn, NULL, alarm_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
   return (st == MQTT_STATUS_OK) ? 1 : 0;
 }
 
