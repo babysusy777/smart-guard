@@ -117,7 +117,7 @@ static uint8_t yellow_blink_active = 0;
 static uint8_t yellow_led_on = 0;
 static uint8_t battery_dead = 0;
 static uint8_t pending_battery_level = 0;
-static uint8_t pendig_battery_notify = 0;
+static uint8_t pending_battery_notify = 0;
 
 
 //CoAP registration
