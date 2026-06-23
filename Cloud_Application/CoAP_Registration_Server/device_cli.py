@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timezone
 
 from influxdb_client import InfluxDBClient, Point
+from influxdb_client.client.write_api import SYNCHRONOUS
 
 
 INFLUX_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
@@ -20,17 +21,11 @@ REGISTRATION_TIMEOUT_SECONDS = 90
 class DeviceCLI:
     def __init__(self) -> None:
         if not INFLUX_TOKEN:
-            raise RuntimeError(
-                "Variabile d'ambiente INFLUXDB_TOKEN non configurata."
-            )
+            raise RuntimeError("Variabile d'ambiente INFLUXDB_TOKEN non configurata.")
 
-        self.client = InfluxDBClient(
-            url=INFLUX_URL,
-            token=INFLUX_TOKEN,
-            org=INFLUX_ORG,
-        )
-
+        self.client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
         self.query_api = self.client.query_api()
+        self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
 
     def close(self) -> None:
         self.client.close()
@@ -38,11 +33,7 @@ class DeviceCLI:
     def wait_for_registration(self, expected_type: str) -> None:
         start_time = datetime.now(timezone.utc)
 
-        readable_type = (
-            "caregiver"
-            if expected_type == "caregiver"
-            else "patient"
-        )
+        readable_type = ("caregiver" if expected_type == "caregiver" else "patient")
 
         print()
         print(f"Registrazione dispositivo {readable_type}")
@@ -223,8 +214,7 @@ class DeviceCLI:
 
     #gestione stato nodi
     def show_node_status(self) -> None:
-        """Mostra l'ultimo heartbeat e lo stato di ogni nodo."""
-        query = f'''
+        query_type = f'''
         from(bucket: "{INFLUX_BUCKET}")
           |> range(start: -1h)
           |> filter(fn: (r) => r["_measurement"] == "heartbeat")
@@ -311,10 +301,10 @@ class DeviceCLI:
                 ultimo = act["time"].astimezone().strftime("%d/%m %H:%M:%S")
  
             # Se failure detection lo segnala, prevale
-            if fail in ("CRITICAL", "WARNING"):
-                connessione = f"OFFLINE ({fail})"
+            if failure in ("CRITICAL", "WARNING"):
+                connessione = f"OFFLINE ({failure})"
  
-            print(f"{node_id:<20}{nome:<18}{tipo:<12}{connessione:<12}{ultimo:<22}{fail}")
+            print(f"{node_id:<20}{nome:<18}{tipo:<12}{connessione:<12}{ultimo:<22}{failure}")
 
     #Gestione allarmi attivi
     def show_active_alarms(self) -> None:

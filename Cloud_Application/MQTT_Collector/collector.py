@@ -128,7 +128,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
     client.subscribe(ALARM_TOPIC)
     client.subscribe(BATTERY_TOPIC)
     client.subscribe(REGISTRATION_TOPIC)
-    print(f"Subscribed to '{HEARTBEAT_TOPIC}', '{ALARM_TOPIC}' and '{BATTERY_TOPIC}'")
+    print(f"Subscribed to '{REGISTRATION_TOPIC}', '{HEARTBEAT_TOPIC}', '{ALARM_TOPIC}' and '{BATTERY_TOPIC}'")
 
 
 #called for every message on a subscribed topic 
@@ -148,7 +148,7 @@ def on_message(client, userdata, msg):
         return
 
     if topic_parts[0] == "registration":
-        event     = payload.get("event", "ONLINE")
+        event = payload.get("event", "ONLINE")
         node_type = payload.get("type", "unknown")
         write_node_activity(node_id, node_type, event)
         print(f"[Activity] node_id={node_id} type={node_type} event={event}")
