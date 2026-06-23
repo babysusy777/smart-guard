@@ -522,7 +522,7 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
     break;
   }
 
-  cse MQTT_EVENT_SUBACK: {
+  case MQTT_EVENT_SUBACK: {
     LOG_INFO("MQTT subscribed\n");
     state = STATE_SUBSCRIBED;
     snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"event\":\"ONLINE\"}", client_id);
