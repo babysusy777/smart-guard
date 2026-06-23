@@ -22,8 +22,17 @@ MQTT_PORT = 1883
 HEARTBEAT_TOPIC = "health/+/heartbeat"
 ALARM_TOPIC = "alarm/+"
 BATTERY_TOPIC = "battery/+"
+REGISTRATION_TOPIC = "registration/+"
 
-
+#writes ONLINE/OFFLINE for a node inside the DB
+def write_node_activity(node_id, node_type, event):
+    point = (
+        Point("node_activity")
+        .tag("node_id", node_id)
+        .tag("type", node_type)
+        .field("event", event)
+    )
+    write_api.write(bucket=BUCKET, org=ORG, record=point)
 
 #writes a heartbeat point: a periodic status report from a patient/caregiver node
 #the Cloud App uses the timestamp of the most recent report for a given node_id to detect failures
@@ -118,6 +127,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
     client.subscribe(HEARTBEAT_TOPIC)
     client.subscribe(ALARM_TOPIC)
     client.subscribe(BATTERY_TOPIC)
+    client.subscribe(REGISTRATION_TOPIC)
     print(f"Subscribed to '{HEARTBEAT_TOPIC}', '{ALARM_TOPIC}' and '{BATTERY_TOPIC}'")
 
 
@@ -137,37 +147,32 @@ def on_message(client, userdata, msg):
         print(f"Ignoring payload without node_id on topic {msg.topic}")
         return
 
-    if topic_parts[0] == "health" and topic_parts[-1] == "heartbeat":
+    if topic_parts[0] == "registration":
+        event     = payload.get("event", "ONLINE")
+        node_type = payload.get("type", "unknown")
+        write_node_activity(node_id, node_type, event)
+        print(f"[Activity] node_id={node_id} type={node_type} event={event}")
+    elif topic_parts[0] == "health" and topic_parts[-1] == "heartbeat":
         state = payload.get("state", "NORMAL")
         node_type = payload.get("type", "unknown")
-
         write_heartbeat(node_id, state, node_type)
-
         print(f"[Heartbeat] node_id={node_id} type={node_type} state={state}")
-
     elif topic_parts[0] == "alarm":
         event = payload.get("event")
-
         if not event:
             print(f"Ignoring alarm payload without event on topic {msg.topic}")
             return
-
         if event in ("FALL", "RESOLVED"):
             write_alarm(node_id, event)
             print(f"[Alarm] node_id={node_id} event={event}")
-
         elif event in ("BATTERY_LOW", "NODE_CRITICAL", "NODE_RECOVERED"):
-
             if event == "BATTERY_LOW" and payload.get("source") == "collector":
                 return
-
             write_notification(node_id, event, payload)
             print(f"[Notification] node_id={node_id} event={event}")
-
         else:
             write_notification(node_id, event, payload)
             print(f"[Notification] node_id={node_id} unknown_event={event}")
-
     elif topic_parts[0] == "battery":
         event = payload.get("event")
         node_type = payload.get("type", "unknown")

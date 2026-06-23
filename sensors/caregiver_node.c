@@ -42,6 +42,7 @@ static const char *broker_ip = MQTT_CLIENT_BROKER_IP_ADDR;
 static char client_id[BUFFER_SIZE];
 static char heartbeat_topic[TOPIC_BUFFER_SIZE];
 static char battery_topic[TOPIC_BUFFER_SIZE];
+static char registration_topic[TOPIC_BUFFER_SIZE];
 static char app_buffer[APP_BUFFER_SIZE];
 static char broker_address[CONFIG_IP_ADDR_STR_LEN];
 static char ack_topic_buf[TOPIC_BUFFER_SIZE];
@@ -485,21 +486,12 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
   }
 
   case MQTT_EVENT_SUBACK: {
-   #if MQTT_311
-      mqtt_suback_event_t *suback_event = (mqtt_suback_event_t *)data;
-
-      if(suback_event->success) {
-        LOG_INFO("MQTT subscribed successfully\n");
-        state = STATE_SUBSCRIBED;
-      } else {
-        LOG_ERR("MQTT subscribe FAILED (return code %x)\n", suback_event->return_code);
-        // stato non aggiornato: restiamo in STATE_CONNECTED, da gestire eventualmente con retry
-      }
-    #else
-      LOG_INFO("MQTT subscribed\n");
-      state = STATE_SUBSCRIBED;
-    #endif
-      break;
+   LOG_INFO("MQTT subscribed\n");
+    state = STATE_SUBSCRIBED;
+    snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"event\":\"ONLINE\"}", client_id);
+    mqtt_publish(&conn, NULL, registration_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+    LOG_INFO("Published ONLINE on %s\n", registration_topic);
+    break;
   }
 
   default:
@@ -584,6 +576,7 @@ PROCESS_THREAD(caregiver_process, ev, data)
 
   snprintf(heartbeat_topic, TOPIC_BUFFER_SIZE, "health/%s/heartbeat", client_id);
   snprintf(battery_topic, TOPIC_BUFFER_SIZE, "battery/%s", client_id);
+  snprintf(registration_topic, TOPIC_BUFFER_SIZE, "registration/%s", client_id);
 
   // Bootstrap 
   //The node waits for IPv6/RPL connectivity before attempting CoAP registration

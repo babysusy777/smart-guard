@@ -5,7 +5,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from influxdb_client import InfluxDBClient
+from influxdb_client import InfluxDBClient, Point
 
 
 INFLUX_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
@@ -97,11 +97,7 @@ class DeviceCLI:
         print("- il server CoAP sia in esecuzione;")
         print("- il nodo invii il tipo corretto.")
 
-    def find_new_registration(
-        self,
-        expected_type: str,
-        start_time: datetime,
-    ) -> dict | None:
+    def find_new_registration(self, expected_type: str, start_time: datetime,) -> dict | None:
 
         start_iso = start_time.isoformat()
 
@@ -115,10 +111,7 @@ class DeviceCLI:
           |> limit(n: 1)
         '''
 
-        tables = self.query_api.query(
-            query=query,
-            org=INFLUX_ORG,
-        )
+        tables = self.query_api.query(query=query, org=INFLUX_ORG,)
 
         for table in tables:
             for record in table.records:
@@ -176,7 +169,7 @@ class DeviceCLI:
             print("Nessun dispositivo registrato negli ultimi 30 giorni.")
             return
 
-        for device in devices.values():
+        for d in devices.values():
             nome = names.get(d["node_id"], "-")
             print(f"{d['node_id']:<20}{nome:<20}{d['type']:<14}{d['protocol']:<12}{d['time']}")
 
@@ -239,24 +232,39 @@ class DeviceCLI:
           |> group(columns: ["node_id"])
           |> last()
         '''
-        tables = self.query_api.query(query=query, org=INFLUX_ORG)
- 
-        # Prendi anche il tipo da "type" field
-        query_type = f'''
+
+        tables_type = self.query_api.query(query=query_type, org=INFLUX_ORG)
+        directory = {}
+        for table in tables_type:
+            for record in table.records:
+                node_id = record.values.get("node_id")
+                if node_id:
+                    directory[node_id] = {
+                        "type": record.values.get("type", "unknown"),
+                        "last_reg": record.get_time(),
+                    }
+
+        #last event - online/offline 
+        query_act = f'''
         from(bucket: "{INFLUX_BUCKET}")
-          |> range(start: -1h)
-          |> filter(fn: (r) => r["_measurement"] == "heartbeat")
-          |> filter(fn: (r) => r["_field"] == "type")
+          |> range(start: -7d)
+          |> filter(fn: (r) => r["_measurement"] == "node_activity")
+          |> filter(fn: (r) => r["_field"] == "event")
           |> group(columns: ["node_id"])
           |> last()
         '''
-        tables_type = self.query_api.query(query=query_type, org=INFLUX_ORG)
-        node_types = {}
-        for table in tables_type:
+        tables_act = self.query_api.query(query=query_act, org=INFLUX_ORG)
+        activity = {}
+        for table in tables_act:
             for record in table.records:
-                node_types[record.values.get("node_id")] = record.get_value()
- 
-        # Failure status
+                node_id = record.values.get("node_id")
+                if node_id:
+                    activity[node_id] = {
+                        "event": record.get_value(),
+                        "time":  record.get_time(),
+                    }
+
+        #failure status
         query_fail = f'''
         from(bucket: "{INFLUX_BUCKET}")
           |> range(start: -24h)
@@ -272,38 +280,41 @@ class DeviceCLI:
                 failure_status[record.values.get("node_id")] = record.get_value()
  
         names = self._get_all_patient_names()
- 
-        nodes = {}
-        for table in tables:
-            for record in table.records:
-                node_id = record.values.get("node_id")
-                if node_id:
-                    nodes[node_id] = {
-                        "state":    record.get_value(),
-                        "last_seen": record.get_time(),
-                    }
- 
         now = datetime.now(timezone.utc)
  
         print()
-        print("Stato nodi (ultimo heartbeat nell'ultima ora)")
-        print("-" * 80)
-        print(f"{'ID':<20}{'NOME':<18}{'TIPO':<12}{'STATO':<10}{'SILENZIO':<14}{'FAILURE'}")
-        print("-" * 80)
+        print("Directory nodi (registrati via CoAP)")
+        print("-" * 85)
+        print(f"{'ID':<20}{'NOME':<18}{'TIPO':<12}{'CONNESSIONE':<12}{'ULTIMO EVENTO':<22}{'FAILURE'}")
+        print("-" * 85)
  
-        if not nodes:
-            print("Nessun nodo ha inviato heartbeat nell'ultima ora.")
+        if not directory:
+            print("Nessun nodo registrato nella directory")
             return
  
-        for node_id, info in nodes.items():
-            elapsed  = (now - info["last_seen"]).total_seconds()
-            nome     = names.get(node_id, "-")
-            tipo     = node_types.get(node_id, "unknown")
-            stato    = info["state"]
-            failure  = failure_status.get(node_id, "unknown")
-            silenzio = f"{elapsed:.0f}s fa"
+        for node_id, info in directory.items():
+            nome = names.get(node_id, "-")
+            tipo = info["type"]
+            act = activity.get(node_id)
+            failure = failure_status.get(node_id, "-")
  
-            print(f"{node_id:<20}{nome:<18}{tipo:<12}{stato:<10}{silenzio:<14}{failure}")
+            if act is None:
+                # Mai visto su MQTT in questa sessione
+                connessione = "MAI ONLINE"
+                ultimo      = "-"
+            elif act["event"] == "ONLINE":
+                connessione = "ONLINE"
+                elapsed = (now - act["time"]).total_seconds()
+                ultimo = f"{elapsed:.0f}s fa"
+            else:
+                connessione = "OFFLINE"
+                ultimo = act["time"].astimezone().strftime("%d/%m %H:%M:%S")
+ 
+            # Se failure detection lo segnala, prevale
+            if fail in ("CRITICAL", "WARNING"):
+                connessione = f"OFFLINE ({fail})"
+ 
+            print(f"{node_id:<20}{nome:<18}{tipo:<12}{connessione:<12}{ultimo:<22}{fail}")
 
     #Gestione allarmi attivi
     def show_active_alarms(self) -> None:
