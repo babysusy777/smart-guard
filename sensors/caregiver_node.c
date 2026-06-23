@@ -527,7 +527,7 @@ static void publish_ack(const char *node_id) {
 
   snprintf(app_buffer, APP_BUFFER_SIZE,"{\"node_id\":\"%s\",\"event\":\"ACK\",\"ack_by\":\"caregiver\",\"caregiver_id\":\"%s\"}",node_id,client_id);
 
-  mqtt_publish(&conn, NULL, ack_topic_buf,(uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
+  mqtt_publish(&conn, NULL, ack_topic_buf,(uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 }
 
 static uint8_t publish_battery_status(uint8_t level) {
