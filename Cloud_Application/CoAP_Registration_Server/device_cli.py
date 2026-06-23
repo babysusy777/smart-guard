@@ -73,6 +73,13 @@ class DeviceCLI:
                     print(f"Tipo:      {device['type']}")
                     print(f"Protocollo:{device['protocol']}")
                     print(f"Data:      {device['time']}")
+
+                    if expected_type == "patient":
+                        print()
+                        risposta = input("Vuoi associare un nome a questo paziente? (s/n): ").strip().lower()
+                        if risposta == "s":
+                            self._set_patient_name(device["node_id"])
+
                     return
 
                 print(".", end="", flush=True)
@@ -146,12 +153,9 @@ class DeviceCLI:
             for record in table.records:
                 node_id = record.values.get("node_id")
 
-                if not node_id:
-                    continue
-
                 # Mantiene soltanto la registrazione più recente
                 # per ciascun dispositivo.
-                if node_id not in devices:
+                if node_id and node_id not in devices:
                     devices[node_id] = {
                         "node_id": node_id,
                         "type": record.values.get("type", "unknown"),
@@ -160,62 +164,262 @@ class DeviceCLI:
                             "%d/%m/%Y %H:%M:%S"
                         ),
                     }
+        names = self._get_all_patient_names()
 
         print()
         print("Dispositivi registrati")
+        print("---------------------------------------------------------------")
+        print(f"{'ID':<20}{'NOME':<20}{'TIPO':<14}{'PROTOCOLLO':<12}{'ULTIMA REG.'}")
         print("---------------------------------------------------------------")
 
         if not devices:
             print("Nessun dispositivo registrato negli ultimi 30 giorni.")
             return
 
-        print(
-            f"{'ID':<20}"
-            f"{'TIPO':<14}"
-            f"{'PROTOCOLLO':<12}"
-            f"{'ULTIMA REGISTRAZIONE'}"
-        )
-
-        print("-" * 65)
-
         for device in devices.values():
-            print(
-                f"{device['node_id']:<20}"
-                f"{device['type']:<14}"
-                f"{device['protocol']:<12}"
-                f"{device['time']}"
-            )
+            nome = names.get(d["node_id"], "-")
+            print(f"{d['node_id']:<20}{nome:<20}{d['type']:<14}{d['protocol']:<12}{d['time']}")
+
+
+    #Gestione nomi 
+    def set_patient_name_interactive(self) -> None:
+        """Flusso CLI per associare un nome a un paziente già registrato."""
+        self.list_registered_devices()
+        print()
+        node_id = input("Inserisci l'ID del paziente a cui associare un nome: ").strip()
+        if not node_id:
+            print("ID non valido.")
+            return
+        self._set_patient_name(node_id)
+ 
+    def _set_patient_name(self, node_id: str) -> None:
+        nome = input(f"Nome da associare a {node_id}: ").strip()
+        if not nome:
+            print("Nome non valido.")
+            return
+        point = (
+            Point("patient_info")
+            .tag("node_id", node_id)
+            .field("name", nome)
+        )
+        self.write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+        print(f"Nome '{nome}' associato al paziente {node_id}.")
+ 
+    def _get_all_patient_names(self) -> dict:
+        """Restituisce {node_id: nome} per tutti i pazienti con nome associato."""
+        query = f'''
+        from(bucket: "{INFLUX_BUCKET}")
+          |> range(start: -365d)
+          |> filter(fn: (r) => r["_measurement"] == "patient_info")
+          |> filter(fn: (r) => r["_field"] == "name")
+          |> group(columns: ["node_id"])
+          |> last()
+        '''
+        tables = self.query_api.query(query=query, org=INFLUX_ORG)
+        result = {}
+        for table in tables:
+            for record in table.records:
+                node_id = record.values.get("node_id")
+                if node_id:
+                    result[node_id] = record.get_value()
+        return result
+ 
+    def _get_patient_name(self, node_id: str) -> str:
+        names = self._get_all_patient_names()
+        return names.get(node_id, node_id)
+
+    #gestione stato nodi
+    def show_node_status(self) -> None:
+        """Mostra l'ultimo heartbeat e lo stato di ogni nodo."""
+        query = f'''
+        from(bucket: "{INFLUX_BUCKET}")
+          |> range(start: -1h)
+          |> filter(fn: (r) => r["_measurement"] == "heartbeat")
+          |> filter(fn: (r) => r["_field"] == "state")
+          |> group(columns: ["node_id"])
+          |> last()
+        '''
+        tables = self.query_api.query(query=query, org=INFLUX_ORG)
+ 
+        # Prendi anche il tipo da "type" field
+        query_type = f'''
+        from(bucket: "{INFLUX_BUCKET}")
+          |> range(start: -1h)
+          |> filter(fn: (r) => r["_measurement"] == "heartbeat")
+          |> filter(fn: (r) => r["_field"] == "type")
+          |> group(columns: ["node_id"])
+          |> last()
+        '''
+        tables_type = self.query_api.query(query=query_type, org=INFLUX_ORG)
+        node_types = {}
+        for table in tables_type:
+            for record in table.records:
+                node_types[record.values.get("node_id")] = record.get_value()
+ 
+        # Failure status
+        query_fail = f'''
+        from(bucket: "{INFLUX_BUCKET}")
+          |> range(start: -24h)
+          |> filter(fn: (r) => r["_measurement"] == "failure_status")
+          |> filter(fn: (r) => r["_field"] == "severity")
+          |> group(columns: ["node_id"])
+          |> last()
+        '''
+        tables_fail = self.query_api.query(query=query_fail, org=INFLUX_ORG)
+        failure_status = {}
+        for table in tables_fail:
+            for record in table.records:
+                failure_status[record.values.get("node_id")] = record.get_value()
+ 
+        names = self._get_all_patient_names()
+ 
+        nodes = {}
+        for table in tables:
+            for record in table.records:
+                node_id = record.values.get("node_id")
+                if node_id:
+                    nodes[node_id] = {
+                        "state":    record.get_value(),
+                        "last_seen": record.get_time(),
+                    }
+ 
+        now = datetime.now(timezone.utc)
+ 
+        print()
+        print("Stato nodi (ultimo heartbeat nell'ultima ora)")
+        print("-" * 80)
+        print(f"{'ID':<20}{'NOME':<18}{'TIPO':<12}{'STATO':<10}{'SILENZIO':<14}{'FAILURE'}")
+        print("-" * 80)
+ 
+        if not nodes:
+            print("Nessun nodo ha inviato heartbeat nell'ultima ora.")
+            return
+ 
+        for node_id, info in nodes.items():
+            elapsed  = (now - info["last_seen"]).total_seconds()
+            nome     = names.get(node_id, "-")
+            tipo     = node_types.get(node_id, "unknown")
+            stato    = info["state"]
+            failure  = failure_status.get(node_id, "unknown")
+            silenzio = f"{elapsed:.0f}s fa"
+ 
+            print(f"{node_id:<20}{nome:<18}{tipo:<12}{stato:<10}{silenzio:<14}{failure}")
+
+    #Gestione allarmi attivi
+    def show_active_alarms(self) -> None:
+        """Mostra i pazienti con allarme FALL attivo (non ancora RESOLVED)."""
+        query = f'''
+        from(bucket: "{INFLUX_BUCKET}")
+          |> range(start: -1h)
+          |> filter(fn: (r) => r["_measurement"] == "alarm")
+          |> filter(fn: (r) => r["_field"] == "event")
+          |> group(columns: ["node_id"])
+          |> last()
+        '''
+        tables = self.query_api.query(query=query, org=INFLUX_ORG)
+ 
+        names = self._get_all_patient_names()
+        active = []
+ 
+        for table in tables:
+            for record in table.records:
+                if record.get_value() == "FALL":
+                    node_id = record.values.get("node_id")
+                    active.append({
+                        "node_id": node_id,
+                        "nome":    names.get(node_id, "-"),
+                        "time":    record.get_time().astimezone().strftime("%d/%m/%Y %H:%M:%S"),
+                    })
+ 
+        print()
+        print("Allarmi attivi")
+        print("-" * 55)
+ 
+        if not active:
+            print("Nessun allarme attivo.")
+            return
+ 
+        print(f"{'ID PAZIENTE':<20}{'NOME':<18}{'RILEVATO ALLE'}")
+        print("-" * 55)
+        for a in active:
+            print(f"{a['node_id']:<20}{a['nome']:<18}{a['time']}")
+
+    #Storico allarmi
+    def show_alarm_history(self) -> None:
+        """Mostra gli ultimi 20 eventi alarm (FALL e RESOLVED)."""
+        query = f'''
+        from(bucket: "{INFLUX_BUCKET}")
+          |> range(start: -7d)
+          |> filter(fn: (r) => r["_measurement"] == "alarm")
+          |> filter(fn: (r) => r["_field"] == "event")
+          |> filter(fn: (r) => r["_value"] == "FALL" or r["_value"] == "RESOLVED")
+          |> sort(columns: ["_time"], desc: true)
+          |> limit(n: 20)
+        '''
+        tables = self.query_api.query(query=query, org=INFLUX_ORG)
+ 
+        names = self._get_all_patient_names()
+        events = []
+ 
+        for table in tables:
+            for record in table.records:
+                node_id = record.values.get("node_id")
+                events.append({
+                    "node_id": node_id,
+                    "nome":    names.get(node_id, "-"),
+                    "event":   record.get_value(),
+                    "time":    record.get_time().astimezone().strftime("%d/%m/%Y %H:%M:%S"),
+                })
+ 
+        print()
+        print("Storico allarmi (ultimi 7 giorni, max 20 eventi)")
+        print("-" * 65)
+ 
+        if not events:
+            print("Nessun evento negli ultimi 7 giorni.")
+            return
+ 
+        print(f"{'DATA/ORA':<22}{'ID PAZIENTE':<20}{'NOME':<15}{'EVENTO'}")
+        print("-" * 65)
+        for e in events:
+            print(f"{e['time']:<22}{e['node_id']:<20}{e['nome']:<15}{e['event']}")
 
     def run(self) -> None:
         while True:
             print()
             print("========================================")
-            print(" Smart Health – Gestione dispositivi")
+            print("  SmartGuard – Gestione dispositivi")
             print("========================================")
             print()
+            print("--- Registrazione ---")
             print("1. Registra il mio dispositivo caregiver")
             print("2. Registra un nuovo dispositivo paziente")
-            print("3. Visualizza i dispositivi registrati")
+            print("3. Visualizza dispositivi registrati")
+            print()
+            print("--- Pazienti ---")
+            print("4. Associa nome a un paziente")
+            print()
+            print("--- Monitoraggio ---")
+            print("5. Visualizza stato nodi")
+            print("6. Visualizza allarmi attivi")
+            print("7. Storico allarmi")
+            print()
             print("0. Esci")
 
             choice = input("\nScelta: ").strip()
 
-            if choice == "1":
-                self.wait_for_registration("caregiver")
-
-            elif choice == "2":
-                self.wait_for_registration("patient")
-
-            elif choice == "3":
-                self.list_registered_devices()
-
+            if choice == "1": self.wait_for_registration("caregiver")
+            elif choice == "2": self.wait_for_registration("patient")
+            elif choice == "3": self.list_registered_devices()
+            elif choice == "4": self.set_patient_name_interactive()
+            elif choice == "5": self.show_node_status()
+            elif choice == "6": self.show_active_alarms()
+            elif choice == "7": self.show_alarm_history()
             elif choice == "0":
                 print("\nChiusura della CLI.")
                 return
-
             else:
-                print("\nScelta non valida. Inserisci 0, 1, 2 oppure 3.")
-
+                print("\nScelta non valida.")
 
 def main() -> None:
     cli = None
