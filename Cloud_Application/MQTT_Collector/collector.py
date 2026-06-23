@@ -24,6 +24,16 @@ ALARM_TOPIC = "alarm/+"
 BATTERY_TOPIC = "battery/+"
 REGISTRATION_TOPIC = "registration/+"
 
+def write_mqtt_registration(node_id, node_type, protocol="mqtt"):
+    point = (
+        Point("registration")
+        .tag("node_id", node_id)
+        .tag("type", node_type)
+        .field("protocol", protocol)
+        .field("ip_address", "mqtt")
+    )
+    write_api.write(bucket=BUCKET, org=ORG, record=point)
+
 #writes ONLINE/OFFLINE for a node inside the DB
 def write_node_activity(node_id, node_type, event):
     point = (
@@ -150,8 +160,11 @@ def on_message(client, userdata, msg):
     if topic_parts[0] == "registration":
         event = payload.get("event", "ONLINE")
         node_type = payload.get("type", "unknown")
+        protocol = payload.get("protocol", "mqtt")
+
+        write_mqtt_registration(node_id, node_type, protocol)
         write_node_activity(node_id, node_type, event)
-        print(f"[Activity] node_id={node_id} type={node_type} event={event}")
+        print(f"[MQTT Registration] node_id={node_id} type={node_type} protocol={protocol} event={event}")
     elif topic_parts[0] == "health" and topic_parts[-1] == "heartbeat":
         state = payload.get("state", "NORMAL")
         node_type = payload.get("type", "unknown")
