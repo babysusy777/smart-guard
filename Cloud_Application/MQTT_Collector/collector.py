@@ -22,7 +22,7 @@ MQTT_PORT = 1883
 HEARTBEAT_TOPIC = "health/+/heartbeat"
 ALARM_TOPIC = "alarm/+"
 BATTERY_TOPIC = "battery/+"
-REGISTRATION_TOPIC = "registration/+"
+REGISTRATION_TOPIC = "registration/#"
 
 def write_mqtt_registration(node_id, node_type, protocol="mqtt"):
     point = (
