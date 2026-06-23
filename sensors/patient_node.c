@@ -533,7 +533,10 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
       }
       break;
     }
-  }
+    default:
+      LOG_INFO("Unhandled MQTT event: %i\n", event);
+      break;
+    }
 }
 
 
