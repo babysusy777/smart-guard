@@ -1,12 +1,15 @@
 #include "patient_tinyml.h"
-#include "fall_binary_model.h"
+
+#include "fall_feature_scaler.h"
+#include "fall_model.h"
+#include "eml_net.h"
 
 #include <float.h>
 #include <stdint.h>
-#include <stdio.h>
 
 #define FEATURES_PER_SENSOR 7
-#define NUM_FEATURES FALL_BINARY_NUM_FEATURES
+#define NUM_FEATURES FALL_NUM_FEATURES
+#define NUM_CLASSES 2
 
 static float last_score = 0.0f;
 
@@ -131,30 +134,53 @@ static void extract_features(const patient_sample_t *window,
   );
 }
 
-static float calculate_binary_score(const float *features) {
-  uint8_t feature_id;
-  float score = FALL_BINARY_BIAS;
+static void normalize_features(float *features) {
+  uint8_t i;
 
-  for(feature_id = 0; feature_id < FALL_BINARY_NUM_FEATURES; feature_id++) {
-    float scale = FALL_BINARY_FEATURE_SCALE[feature_id];
-    float normalized_feature;
-
-    if(scale <= 0.0f) {
-      continue;
+  for(i = 0; i < NUM_FEATURES; i++) {
+    if(FALL_FEATURE_SCALE[i] > 0.0f) {
+      features[i] =
+        (features[i] - FALL_FEATURE_MEAN[i]) / FALL_FEATURE_SCALE[i];
+    } else {
+      features[i] = 0.0f;
     }
+  }
+}
 
-    normalized_feature =
-      (features[feature_id] - FALL_BINARY_FEATURE_MEAN[feature_id]) / scale;
+static int argmax(const float *values, uint8_t n) {
+  uint8_t i;
+  uint8_t best = 0;
 
-    score += FALL_BINARY_WEIGHTS[feature_id] * normalized_feature;
+  for(i = 1; i < n; i++) {
+    if(values[i] > values[best]) {
+      best = i;
+    }
   }
 
-  return score;
+  return (int)best;
+}
+
+static void suppress_emlearn_unused_warnings(void) {
+  /*
+   * In the classroom example, these symbols are referenced because some
+   * Contiki builds use -Werror and emlearn exposes static helper strings.
+   * This small reference avoids unused-symbol warnings without changing logic.
+   */
+  volatile const void *p1 = (const void *)eml_error_str;
+  volatile const void *p2 = (const void *)eml_net_activation_function_strs;
+
+  (void)p1;
+  (void)p2;
 }
 
 int tinyml_predict_window(const patient_sample_t *window,
                           uint8_t window_size) {
   float features[NUM_FEATURES];
+  float outputs[NUM_CLASSES];
+  int predicted_class;
+  uint8_t i;
+
+  suppress_emlearn_unused_warnings();
 
   if(window == NULL || window_size != TINYML_WINDOW_SIZE) {
     last_score = -FLT_MAX;
@@ -162,16 +188,29 @@ int tinyml_predict_window(const patient_sample_t *window,
   }
 
   extract_features(window, window_size, features);
+  normalize_features(features);
 
-  last_score = calculate_binary_score(features);
+  for(i = 0; i < NUM_CLASSES; i++) {
+    outputs[i] = 0.0f;
+  }
 
-  //printf(
-  //  "TinyML binary score=%ld threshold=%ld\n",
-  //  (long)(last_score * 1000.0f),
-  //  (long)(FALL_BINARY_DECISION_THRESHOLD * 1000.0f)
-  //);
+  /*
+   * Class order is fixed by train_fall_emlearn.py:
+   *   outputs[0] = NORMAL
+   *   outputs[1] = FALL
+   */
+  eml_net_predict_proba(
+    &fall_model,
+    features,
+    NUM_FEATURES,
+    outputs,
+    NUM_CLASSES
+  );
 
-  if(last_score >= FALL_BINARY_DECISION_THRESHOLD) {
+  predicted_class = argmax(outputs, NUM_CLASSES);
+  last_score = outputs[TINYML_CLASS_FALL];
+
+  if(predicted_class == TINYML_CLASS_FALL) {
     return TINYML_CLASS_FALL;
   }
 
