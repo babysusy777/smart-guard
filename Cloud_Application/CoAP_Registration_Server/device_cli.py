@@ -9,7 +9,7 @@ from influxdb_client import InfluxDBClient
 
 
 INFLUX_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
-INFLUX_TOKEN = os.getenv("INFLUXDB_TOKEN")
+INFLUX_TOKEN = os.getenv("INFLUXDB_TOKEN", "-dDRkdv-5FuOWXeJSpnVr_gjHKrhGw2CyYp-MezlwAyIU5cwKbaQKyPV5--0hRj0kZHJ8W_cXymV6JaB_vBo6g==")
 INFLUX_ORG = os.getenv("INFLUXDB_ORG", "myorg")
 INFLUX_BUCKET = os.getenv("INFLUXDB_BUCKET", "iot_health")
 
