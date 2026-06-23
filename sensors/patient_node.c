@@ -495,44 +495,45 @@ static uint8_t publish_alarm(void) {
 //updates status / calls pub_handler if a message has been received
 static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data) {
   switch(event) {
-  case MQTT_EVENT_CONNECTED:
-    LOG_INFO("MQTT connected\n");
-    reconnect_attempts = 0;
-    reconnect_ticks = 0;
-    connecting_ticks = 0;
-    state = STATE_CONNECTED;
-    break;
+    case MQTT_EVENT_CONNECTED:
+      LOG_INFO("MQTT connected\n");
+      reconnect_attempts = 0;
+      reconnect_ticks = 0;
+      connecting_ticks = 0;
+      state = STATE_CONNECTED;
+      break;
 
-  case MQTT_EVENT_DISCONNECTED:
-    LOG_INFO("MQTT disconnected. Reason %u\n", *((mqtt_event_t *)data));
+    case MQTT_EVENT_DISCONNECTED:
+      LOG_INFO("MQTT disconnected. Reason %u\n", *((mqtt_event_t *)data));
 
-    if(battery_dead) {
-      state = STATE_MANUAL_RESTART_REQUIRED;
-      LOG_ERR("MQTT disconnected because battery is depleted. Manual restart required.\n");
+      if(battery_dead) {
+        state = STATE_MANUAL_RESTART_REQUIRED;
+        LOG_ERR("MQTT disconnected because battery is depleted. Manual restart required.\n");
+        break;
+      }
+
+      enter_reconnect_or_manual_restart();
+      process_poll(&patient_node_process);
+      break;
+
+    case MQTT_EVENT_PUBLISH: {
+      struct mqtt_message *msg = data;
+      pub_handler(msg->topic, strlen(msg->topic), msg->payload_chunk, msg->payload_length);
       break;
     }
 
-    enter_reconnect_or_manual_restart();
-    process_poll(&patient_node_process);
-    break;
-
-  case MQTT_EVENT_PUBLISH: {
-    struct mqtt_message *msg = data;
-    pub_handler(msg->topic, strlen(msg->topic), msg->payload_chunk, msg->payload_length);
-    break;
-  }
-
-  case MQTT_EVENT_SUBACK: {
-    LOG_INFO("MQTT subscribed\n");
-    state = STATE_SUBSCRIBED;
-    snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"event\":\"ONLINE\"}", client_id);
-    mqtt_publish(&conn, NULL, registration_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-    LOG_INFO("Published ONLINE on %s\n", registration_topic);
-    if(alarm_active) {
-      publish_alarm();
+    case MQTT_EVENT_SUBACK: {
+      LOG_INFO("MQTT subscribed\n");
+      state = STATE_SUBSCRIBED;
+      snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"event\":\"ONLINE\"}", client_id);
+      mqtt_publish(&conn, NULL, registration_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+      LOG_INFO("Published ONLINE on %s\n", registration_topic);
+      if(alarm_active) {
+        publish_alarm();
+      }
+      break;
     }
-    break;
-}
+  }
 }
 
 
