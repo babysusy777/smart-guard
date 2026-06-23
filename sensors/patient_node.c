@@ -124,6 +124,14 @@ static uint8_t pending_battery_notify = 0;
 #define BATTERY_NOTIFY_RETRY_INTERVAL (10 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
 static unsigned long battery_notify_retry_counter = 0;
 
+// Mqtt Registration Publish
+
+static uint8_t pending_mqtt_registration = 1;
+
+#define MQTT_REGISTRATION_RETRY_INTERVAL (2 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
+
+static unsigned long mqtt_registration_retry_counter = 0;
+
 
 //CoAP registration
 #define REGISTRATION_SERVER_EP "coap://[fd00::1]:5683"
@@ -175,6 +183,34 @@ static uint8_t force_sound_on_fall = 0;
 
 PROCESS(patient_node_process, "Patient node");
 AUTOSTART_PROCESSES(&patient_node_process);
+
+static uint8_t publish_mqtt_registration(void) {
+  mqtt_status_t publish_status;
+
+  if(state != STATE_SUBSCRIBED) {
+    LOG_INFO("Cannot publish MQTT registration: MQTT not subscribed\n");
+    return 0;
+  }
+
+  snprintf(app_buffer, APP_BUFFER_SIZE,
+           "{\"node_id\":\"%s\",\"type\":\"patient\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}",
+           client_id);
+
+  publish_status = mqtt_publish(&conn, NULL, registration_topic,
+                                (uint8_t *)app_buffer,
+                                strlen(app_buffer),
+                                MQTT_QOS_LEVEL_0,
+                                MQTT_RETAIN_ON);
+
+  if(publish_status == MQTT_STATUS_OK) {
+    LOG_INFO("MQTT registration queued successfully on %s\n", registration_topic);
+    return 1;
+  }
+
+  LOG_WARN("MQTT registration could not be queued on %s: status=%d\n",
+           registration_topic, publish_status);
+  return 0;
+}
 
 //check if the node has network connectivity (global IPv6 address + default route)
 static bool have_connectivity(void) {
@@ -523,26 +559,15 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
     }
 
     case MQTT_EVENT_SUBACK: {
-      mqtt_status_t pub_status;
-
       LOG_INFO("MQTT subscribed\n");
       state = STATE_SUBSCRIBED;
 
-      snprintf(app_buffer, APP_BUFFER_SIZE,
-              "{\"node_id\":\"%s\",\"type\":\"patient\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}",
-              client_id);
+      pending_mqtt_registration = 1;
+      mqtt_registration_retry_counter = MQTT_REGISTRATION_RETRY_INTERVAL;
 
-      pub_status = mqtt_publish(&conn, NULL, registration_topic,
-                                (uint8_t *)app_buffer,
-                                strlen(app_buffer),
-                                MQTT_QOS_LEVEL_1,
-                                MQTT_RETAIN_ON);
-
-      if(pub_status == MQTT_STATUS_OK) {
-        LOG_INFO("Published ONLINE on %s\n", registration_topic);
-      } else {
-        LOG_WARN("ONLINE publish failed on %s: status=%d\n",
-                registration_topic, pub_status);
+      if(alarm_active) {
+        pending_fall_alarm = 1;
+        fall_alarm_retry_counter = FALL_ALARM_RETRY_INTERVAL;
       }
 
       break;
@@ -899,7 +924,24 @@ PROCESS_THREAD(patient_node_process, ev, data) {
           }
         }
 
-        /* 4. Heartbeat solo se non ho appena tentato altro */
+        /* 4. MQTT registration pending */
+        if(!mqtt_publish_attempted && pending_mqtt_registration) {
+          mqtt_registration_retry_counter++;
+
+          if(mqtt_registration_retry_counter >= MQTT_REGISTRATION_RETRY_INTERVAL) {
+            mqtt_registration_retry_counter = 0;
+            mqtt_publish_attempted = 1;
+
+            if(publish_mqtt_registration()) {
+              pending_mqtt_registration = 0;
+              LOG_INFO("Pending MQTT registration delivered\n");
+            } else {
+              LOG_WARN("Pending MQTT registration not sent yet: MQTT queue busy\n");
+            }
+          }
+        }
+
+        /* 5. Heartbeat solo se non ho appena tentato altro */
         if(!mqtt_publish_attempted) {
           publish_counter++;
 

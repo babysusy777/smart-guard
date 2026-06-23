@@ -113,6 +113,12 @@ static uint8_t battery_dead = 0;
 static uint8_t pending_battery_level = 0;
 static uint8_t pending_battery_notify = 0;
 
+static uint8_t pending_mqtt_registration = 1;
+
+#define MQTT_REGISTRATION_RETRY_INTERVAL (2 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
+
+static unsigned long mqtt_registration_retry_counter = 0;
+
 #define BATTERY_NOTIFY_RETRY_INTERVAL (10 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
 static unsigned long battery_notify_retry_counter = 0;
 
@@ -156,6 +162,34 @@ static struct etimer blink_timer;
 
 PROCESS(caregiver_process, "Caregiver node");
 AUTOSTART_PROCESSES(&caregiver_process);
+
+static uint8_t publish_mqtt_registration(void) {
+  mqtt_status_t publish_status;
+
+  if(state != STATE_SUBSCRIBED) {
+    LOG_INFO("Cannot publish MQTT registration: MQTT not subscribed\n");
+    return 0;
+  }
+
+  snprintf(app_buffer, APP_BUFFER_SIZE,
+           "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}",
+           client_id);
+
+  publish_status = mqtt_publish(&conn, NULL, registration_topic,
+                                (uint8_t *)app_buffer,
+                                strlen(app_buffer),
+                                MQTT_QOS_LEVEL_0,
+                                MQTT_RETAIN_ON);
+
+  if(publish_status == MQTT_STATUS_OK) {
+    LOG_INFO("MQTT registration queued successfully on %s\n", registration_topic);
+    return 1;
+  }
+
+  LOG_WARN("MQTT registration could not be queued on %s: status=%d\n",
+           registration_topic, publish_status);
+  return 0;
+}
 
 //check if the node has network connectivity (global IPv6 address + default route)
 static bool have_connectivity(void) {
@@ -486,27 +520,11 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
     }
 
     case MQTT_EVENT_SUBACK: {
-      mqtt_status_t pub_status;
-
       LOG_INFO("MQTT subscribed\n");
       state = STATE_SUBSCRIBED;
 
-      snprintf(app_buffer, APP_BUFFER_SIZE,
-              "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}",
-              client_id);
-
-      pub_status = mqtt_publish(&conn, NULL, registration_topic,
-                                (uint8_t *)app_buffer,
-                                strlen(app_buffer),
-                                MQTT_QOS_LEVEL_1,
-                                MQTT_RETAIN_ON);
-
-      if(pub_status == MQTT_STATUS_OK) {
-        LOG_INFO("Published ONLINE on %s\n", registration_topic);
-      } else {
-        LOG_WARN("ONLINE publish failed on %s: status=%d\n",
-                registration_topic, pub_status);
-      }
+      pending_mqtt_registration = 1;
+      mqtt_registration_retry_counter = MQTT_REGISTRATION_RETRY_INTERVAL;
 
       break;
     }
@@ -789,11 +807,14 @@ PROCESS_THREAD(caregiver_process, ev, data)
       }
 
       if(state == STATE_SUBSCRIBED) {
+        uint8_t mqtt_publish_attempted = 0;
+
         if(pending_battery_notify) {
           battery_notify_retry_counter++;
 
           if(battery_notify_retry_counter >= BATTERY_NOTIFY_RETRY_INTERVAL) {
             battery_notify_retry_counter = 0;
+            mqtt_publish_attempted = 1;
 
             if(publish_battery_status(pending_battery_level)) {
               pending_battery_notify = 0;
@@ -804,10 +825,29 @@ PROCESS_THREAD(caregiver_process, ev, data)
           }
         }
 
-        publish_counter++;
-        if(publish_counter >= publish_every_n_ticks) {
-          publish_counter = 0;
-          publish_heartbeat();
+        if(!mqtt_publish_attempted && pending_mqtt_registration) {
+          mqtt_registration_retry_counter++;
+
+          if(mqtt_registration_retry_counter >= MQTT_REGISTRATION_RETRY_INTERVAL) {
+            mqtt_registration_retry_counter = 0;
+            mqtt_publish_attempted = 1;
+
+            if(publish_mqtt_registration()) {
+              pending_mqtt_registration = 0;
+              LOG_INFO("Pending MQTT registration delivered\n");
+            } else {
+              LOG_WARN("Pending MQTT registration not sent yet: MQTT queue busy\n");
+            }
+          }
+        }
+
+        if(!mqtt_publish_attempted) {
+          publish_counter++;
+
+          if(publish_counter >= publish_every_n_ticks) {
+            publish_counter = 0;
+            publish_heartbeat();
+          }
         }
       }
       
