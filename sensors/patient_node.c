@@ -68,7 +68,6 @@ static uint8_t state;
 static uint8_t reconnect_attempts = 0;
 static unsigned long reconnect_ticks = 0;
 static unsigned long connecting_ticks = 0;
-static uint8_t reconnect_mode_slow = 0;
 static uint8_t alarm_sound = 0;
 
 
@@ -374,11 +373,9 @@ static void enter_reconnect_or_manual_restart(void) {
   }
 
   if(reconnect_attempts >= MAX_FAST_RECONNECT_ATTEMPTS) {
-    reconnect_mode_slow = 1;
     state = STATE_RECONNECTING_SLOW;
     LOG_INFO("MQTT reconnect: switching to slow mode\n");
   } else {
-    reconnect_mode_slow = 0;
     state = STATE_RECONNECTING_FAST;
     LOG_INFO("MQTT reconnect: using fast mode\n");
   }
@@ -502,7 +499,6 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
     reconnect_attempts = 0;
     reconnect_ticks = 0;
     connecting_ticks = 0;
-    reconnect_mode_slow = 0;
     state = STATE_CONNECTED;
     break;
 
