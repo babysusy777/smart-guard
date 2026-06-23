@@ -144,6 +144,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
 #called for every message on a subscribed topic 
 #we look at the topic to decide if it's a heartbeat or an alarm, then parse the JSON payload and write the point to InfluxDB
 def on_message(client, userdata, msg):
+    print(f"[RAW MQTT] topic={msg.topic} payload={msg.payload!r}")
     topic_parts = msg.topic.split("/")
 
     try:
@@ -158,11 +159,13 @@ def on_message(client, userdata, msg):
         return
 
     if topic_parts[0] == "registration":
+        print(f"[DEBUG]")
         event = payload.get("event", "ONLINE")
         node_type = payload.get("type", "unknown")
         protocol = payload.get("protocol", "mqtt")
-
+        print(f"[DEBUG] registration message received 1111: {node_id} {event}")  # ← aggiungi
         write_mqtt_registration(node_id, node_type, protocol)
+        print(f"[DEBUG] registration message received 2222: {node_id} {event}")  # ← aggiungi
         write_node_activity(node_id, node_type, event)
         print(f"[MQTT Registration] node_id={node_id} type={node_type} protocol={protocol} event={event}")
     elif topic_parts[0] == "health" and topic_parts[-1] == "heartbeat":
