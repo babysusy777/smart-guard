@@ -489,7 +489,7 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
     LOG_INFO("MQTT subscribed\n");
       state = STATE_SUBSCRIBED;
       snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"event\":\"ONLINE\"}", client_id);
-      mqtt_publish(&conn, NULL, registration_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+      mqtt_publish(&conn, NULL, registration_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
       LOG_INFO("Published ONLINE on %s\n", registration_topic);
       break;
     }

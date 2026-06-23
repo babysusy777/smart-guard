@@ -137,7 +137,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
     client.subscribe(HEARTBEAT_TOPIC)
     client.subscribe(ALARM_TOPIC)
     client.subscribe(BATTERY_TOPIC)
-    client.subscribe(REGISTRATION_TOPIC)
+    client.subscribe(REGISTRATION_TOPIC, qos=1)
     print(f"Subscribed to '{REGISTRATION_TOPIC}', '{HEARTBEAT_TOPIC}', '{ALARM_TOPIC}' and '{BATTERY_TOPIC}'")
 
 
