@@ -179,7 +179,7 @@ static uint8_t publish_mqtt_registration(void) {
                                 (uint8_t *)app_buffer,
                                 strlen(app_buffer),
                                 MQTT_QOS_LEVEL_0,
-                                MQTT_RETAIN_ON);
+                                MQTT_RETAIN_OFF);
 
   if(publish_status == MQTT_STATUS_OK) {
     LOG_INFO("MQTT registration queued successfully on %s\n", registration_topic);
