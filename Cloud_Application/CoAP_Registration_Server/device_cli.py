@@ -218,7 +218,7 @@ class DeviceCLI:
         from(bucket: "{INFLUX_BUCKET}")
           |> range(start: -1h)
           |> filter(fn: (r) => r["_measurement"] == "registration")
-          |> filter(fn: (r) => r["_field"] == "state")
+          |> filter(fn: (r) => r["_field"] == "protocol")
           |> group(columns: ["node_id"])
           |> last()
         '''
