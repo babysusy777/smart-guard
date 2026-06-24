@@ -796,7 +796,7 @@ PROCESS_THREAD(caregiver_process, ev, data)
       }
 
       if(state == STATE_CONNECTED) {
-        status = mqtt_subscribe(&conn, NULL, "alarm/#", MQTT_QOS_LEVEL_1);
+        status = mqtt_subscribe(&conn, NULL, "alarm/+", MQTT_QOS_LEVEL_1);
 
         if(status == MQTT_STATUS_OUT_QUEUE_FULL) {
           LOG_ERR("Tried to subscribe but command queue was full!\n");

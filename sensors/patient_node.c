@@ -364,11 +364,7 @@ static uint8_t publish_heartbeat(void) {
 
   snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"state\":\"%s\"}", client_id, state_str);
 
-  publish_status = mqtt_publish(&conn, NULL, heartbeat_topic,
-                                (uint8_t *)app_buffer,
-                                strlen(app_buffer),
-                                MQTT_QOS_LEVEL_0,
-                                MQTT_RETAIN_OFF);
+  publish_status = mqtt_publish(&conn, NULL, heartbeat_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 
   if(publish_status != MQTT_STATUS_OK) {
     LOG_WARN("Heartbeat could not be queued: status=%d\n", publish_status);
@@ -634,7 +630,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
   }
 
   // CoAP registration 
-  // The registration is blocking, but only during bootstrap
+  // The registration is blocking during bootstrap
   // and the node will start MQTT only after successful CoAP registration
   
   while(!coap_registered && coap_registration_attempts < MAX_COAP_REG_ATTEMPTS) {
@@ -842,9 +838,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
         LOG_INFO("Connecting to MQTT broker\n");
         snprintf(broker_address, CONFIG_IP_ADDR_STR_LEN, "%s", broker_ip);
 
-        mqtt_connect(&conn, broker_address, DEFAULT_BROKER_PORT,
-                      (DEFAULT_PUBLISH_INTERVAL * 3) / CLOCK_SECOND,
-                      MQTT_CLEAN_SESSION_ON);
+        mqtt_connect(&conn, broker_address, DEFAULT_BROKER_PORT, (DEFAULT_PUBLISH_INTERVAL * 3) / CLOCK_SECOND, MQTT_CLEAN_SESSION_ON);
         state = STATE_CONNECTING;
       }
 
