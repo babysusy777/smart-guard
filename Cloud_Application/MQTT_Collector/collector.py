@@ -30,7 +30,6 @@ def write_mqtt_registration(node_id, node_type, protocol="mqtt"):
         .tag("node_id", node_id)
         .tag("type", node_type)
         .field("protocol", protocol)
-        .field("ip_address", "mqtt")
     )
     write_api.write(bucket=BUCKET, org=ORG, record=point)
 
