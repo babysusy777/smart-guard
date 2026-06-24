@@ -217,7 +217,7 @@ class DeviceCLI:
         query_type = f'''
         from(bucket: "{INFLUX_BUCKET}")
           |> range(start: -1h)
-          |> filter(fn: (r) => r["_measurement"] == "heartbeat")
+          |> filter(fn: (r) => r["_measurement"] == "registration")
           |> filter(fn: (r) => r["_field"] == "state")
           |> group(columns: ["node_id"])
           |> last()
@@ -231,7 +231,6 @@ class DeviceCLI:
                 if node_id:
                     directory[node_id] = {
                         "type": record.values.get("type", "unknown"),
-                        "last_reg": record.get_time(),
                     }
 
         #last event - online/offline 
