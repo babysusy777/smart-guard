@@ -33,6 +33,7 @@ MISSED_NORMAL = 3
 MISSED_ALARM = 6
 FALLBACK_PATIENT_RATE_SECONDS = 30
 FALLBACK_CAREGIVER_RATE_SECONDS = 60
+MAX_CONGESTION_RATE_SECONDS = 240
 
 #returns {node_id: last_heartbeat_datetime} for every node that has published at least one heartbeat in the last hour
 def get_last_heartbeats():
@@ -181,8 +182,31 @@ def poll_once():
             threshold = MISSED_NORMAL * rate
         
         previous_severity = last_failure_statuses.get(node_id)
-        severity = "CRITICAL" if elapsed > threshold else "NORMAL"
+        heartbeat_missing = elapsed > threshold
+        congestion_limit_reached = rate >= MAX_CONGESTION_RATE_SECONDS
+
+        if heartbeat_missing:
+            if previous_severity == "CRITICAL":
+                # Once a node is CRITICAL, keep it CRITICAL until a heartbeat is restored.
+                severity = "CRITICAL"
+            elif congestion_limit_reached:
+                # The node becomes CRITICAL only after congestion adaptation reached max rate.
+                severity = "CRITICAL"
+            else:
+                # Heartbeats are missing, but the adaptive mechanism has not reached its limit yet.
+                # We do not notify caregivers/patients yet.
+                severity = "WARNING"
+        else:
+            severity = "NORMAL"
+
         write_failure_status(node_id, severity)
+
+        if severity == "WARNING":
+            print(f"[FailureDetector] {node_id}: WARNING "
+                f"(type={node_type}, no heartbeat for {elapsed:.1f}s, "
+                f"threshold={threshold:.1f}s, active_alarm={has_active_alarm}, "
+                f"rate={rate}s, max_rate={MAX_CONGESTION_RATE_SECONDS}s). "
+                f"Waiting for congestion adaptation to reach max before CRITICAL.")
 
         if severity == "CRITICAL":
             print(f"[FailureDetector] {node_id}: CRITICAL "
