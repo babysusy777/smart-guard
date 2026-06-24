@@ -422,11 +422,6 @@ static void pub_handler(const char *topic, uint16_t topic_len, const uint8_t *ch
     return;
   }
 
-  if(strstr(topic, "/ack") != NULL) {
-    LOG_INFO("ACK topic received by caregiver, ignored\n");
-    return;
-  }
-
   if(!extract_node_id(chunk, chunk_len, node_id, NODE_ID_BUFFER_SIZE)) {
     LOG_INFO("Malformed payload, ignored\n");
     return;
