@@ -71,6 +71,7 @@ static unsigned long reconnect_ticks = 0;
 static unsigned long connecting_ticks = 0;
 static uint8_t alarm_sound = 0;
 
+static uint32_t heartbeat_seq = 0;  //per test
 
 #define FALL_ALARM_RETRY_INTERVAL (2 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
 
@@ -90,6 +91,11 @@ static struct etimer periodic_timer;
 
 #define SAMPLE_PERIOD (CLOCK_SECOND/5)
 static struct etimer sampling_timer;
+
+
+//Gestione coda piena
+static uint8_t consecutive_publish_failures = 0;
+#define MAX_CONSECUTIVE_FAILURES 5
 
 // Batteria
 
@@ -153,7 +159,7 @@ static unsigned long fall_alarm_retry_counter = 0;
 #define RESOLVED_RETRY_INTERVAL (5 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
 static unsigned long resolved_retry_counter = 0;
 
-#define ALARM_SPEEDUP_FACTOR 10 //alarm interval becomes equal to publish_every_n_ticks / FACTOR 
+#define ALARM_SPEEDUP_FACTOR 20 //alarm interval becomes equal to publish_every_n_ticks / FACTOR 
 //FACTOR is sent by cloud application to regulate the congestion
 
 // Resource CoAP /config
@@ -192,30 +198,22 @@ static uint8_t publish_mqtt_registration(void) {
     return 0;
   }
 
-  snprintf(app_buffer, APP_BUFFER_SIZE,
-           "{\"node_id\":\"%s\",\"type\":\"patient\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}",
-           client_id);
+  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}", client_id);
 
-  publish_status = mqtt_publish(&conn, NULL, registration_topic,
-                                (uint8_t *)app_buffer,
-                                strlen(app_buffer),
-                                MQTT_QOS_LEVEL_0,
-                                MQTT_RETAIN_OFF);
+  publish_status = mqtt_publish(&conn, NULL, registration_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 
   if(publish_status == MQTT_STATUS_OK) {
     LOG_INFO("MQTT registration queued successfully on %s\n", registration_topic);
     return 1;
   }
 
-  LOG_WARN("MQTT registration could not be queued on %s: status=%d\n",
-           registration_topic, publish_status);
+  LOG_WARN("MQTT registration could not be queued on %s: status=%d\n", registration_topic, publish_status);
   return 0;
 }
 
 //check if the node has network connectivity (global IPv6 address + default route)
 static bool have_connectivity(void) {
-  if(uip_ds6_get_global(ADDR_PREFERRED) == NULL ||
-     uip_ds6_defrt_choose() == NULL) {
+  if(uip_ds6_get_global(ADDR_PREFERRED) == NULL || uip_ds6_defrt_choose() == NULL) {
     return false;
   }
   return true;
@@ -362,15 +360,28 @@ static uint8_t publish_heartbeat(void) {
   const char *state_str = (patient_state == PATIENT_FALL) ? "FALL" : "NORMAL";
   mqtt_status_t publish_status;
 
-  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"state\":\"%s\"}", client_id, state_str);
+  //due righe seguenti per i test - ricorda di rimuovere il commeno a snprintf sotto
+  uint32_t now_seconds = clock_seconds();
+  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"state\":\"%s\",\"seq\":%lu,\"ts\":%lu}", client_id, state_str, (unsigned long)heartbeat_seq, (unsigned long)now_seconds);
+
+  //snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"state\":\"%s\"}", client_id, state_str);
 
   publish_status = mqtt_publish(&conn, NULL, heartbeat_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 
   if(publish_status != MQTT_STATUS_OK) {
+    consecutive_publish_failures++;
     LOG_WARN("Heartbeat could not be queued: status=%d\n", publish_status);
+    
+    if(consecutive_publish_failures >= MAX_CONSECUTIVE_FAILURES) {
+      LOG_ERR("Queue full, flushing MQTT connection to recover\n");
+      consecutive_publish_failures = 0;
+      mqtt_disconnect(&conn);
+    }
     return 0;
   }
 
+   heartbeat_seq++;
+  consecutive_publish_failures = 0;
   return 1;
 }
 
@@ -564,6 +575,11 @@ static void mqtt_event(struct mqtt_connection *m, mqtt_event_t event, void *data
       if(alarm_active) {
         pending_fall_alarm = 1;
         fall_alarm_retry_counter = FALL_ALARM_RETRY_INTERVAL;
+      }
+
+      //se c'era un resolved pendente, riprogrammalo
+      if(pending_alarm_resolved) {
+        resolved_retry_counter = RESOLVED_RETRY_INTERVAL;
       }
 
       break;

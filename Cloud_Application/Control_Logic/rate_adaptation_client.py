@@ -20,11 +20,11 @@ query_api = influx_client.query_api()
 #rate adaptation parameters
 DEFAULT_RATE_SECONDS = 30 #values used if the node does not respond
 MAX_RATE_SECONDS = 240
-WINDOW_SECONDS = 5 * 60 #5 minutes
+WINDOW_SECONDS = 5 * 20 #5 minutes
 EXPECTED_RATIO_THRESHOLD = 0.7 #below 70% of expected heartbeats -> congestion
-POLL_INTERVAL_SECONDS = 60 #how often we check for congestion
+POLL_INTERVAL_SECONDS = 20 #how often we check for congestion
 
-ALARM_SPEEDUP_FACTOR = 10
+ALARM_SPEEDUP_FACTOR = 20
 
 CONFIG_PATH = "/config"
 COAP_PORT = 5683
@@ -217,11 +217,11 @@ async def check_congestion_once():
                       f"received {received}/{expected:.0f} heartbeats "
                       f"(ratio={ratio:.2f}). Raising rate {state['rate']}s -> {new_rate}s")
 
-                await coap_put_config(state["ip"], new_rate)
+                await coap_put_config(state["ip"], new_rate) 
 
-                state["rate"] = new_rate
+                state["rate"] = new_rate 
 
-                write_config_rate(node_id,new_rate,reason="congestion_detected")
+                write_config_rate(node_id,new_rate,reason="congestion_detected") 
 
         else:
             # no congestion is present, so if the rate is over the default we reduce it
@@ -231,9 +231,9 @@ async def check_congestion_once():
                 print(f"[CoAP_actuator] No congestion for {node_id} "
                       f"(ratio={ratio:.2f}). Lowering rate {state['rate']}s -> {new_rate}s")
 
-                await coap_put_config(state["ip"], new_rate)
+                await coap_put_config(state["ip"], new_rate) 
 
-                state["rate"] = new_rate
+                state["rate"] = new_rate 
 
                 write_config_rate(node_id, new_rate, reason="congestion_recovered")
 

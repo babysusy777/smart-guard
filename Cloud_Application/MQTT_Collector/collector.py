@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+import time #test
 import json
 import paho.mqtt.client as mqtt
 from influxdb_client import InfluxDBClient, Point
@@ -13,6 +13,7 @@ URL    = "http://localhost:8086"
 
 influx_client = InfluxDBClient(url=URL, token=TOKEN, org=ORG)
 write_api = influx_client.write_api(write_options=SYNCHRONOUS)
+query_api = influx_client.query_api() #test
 
 #MQTT broker configuration
 MQTT_BROKER = "localhost"
@@ -43,15 +44,78 @@ def write_node_activity(node_id, node_type, event):
     )
     write_api.write(bucket=BUCKET, org=ORG, record=point)
 
+
+# tutte e 4 le righe sotto sono di TEST
+seq_tracker = {}
+last_heartbeat_time = {}
+EXPECTED_ALARM_INTERVAL = 1.5  # secondi, con ALARM_SPEEDUP_FACTOR=20 e rate=30s
+EXPECTED_NORMAL_INTERVAL = 30.0
+rate_cache = {}
+RATE_CACHE_TTL = 30
+
+#test
+def get_current_rate(node_id, state):
+    now = time.time()
+    if node_id in rate_cache:
+        rate, ts = rate_cache[node_id]
+        if now - ts < RATE_CACHE_TTL:
+            return rate / 20.0 if state == "FALL" else rate
+
+    flux_query = f'''
+    from(bucket: "{BUCKET}")
+      |> range(start: -24h)
+      |> filter(fn: (r) => r._measurement == "config")
+      |> filter(fn: (r) => r._field == "rate")
+      |> filter(fn: (r) => r.node_id == "{node_id}")
+      |> last()
+    '''
+    tables = query_api.query(flux_query, org=ORG)
+    for table in tables:
+        for record in table.records:
+            rate = float(record.get_value())
+            rate_cache[node_id] = (rate, now)
+            return rate / 20.0 if state == "FALL" else rate
+    return 1.5  # default FALL con rate 30s
+
 #writes a heartbeat point: a periodic status report from a patient/caregiver node
 #the Cloud App uses the timestamp of the most recent report for a given node_id to detect failures
-def write_heartbeat(node_id, state, node_type):
+#def write_heartbeat(node_id, state, node_type):
+def write_heartbeat(node_id, state, node_type, seq=None, ts=None): #test
+    recv_time = time.time() #test
     point = (
         Point("heartbeat")
         .tag("node_id", node_id)
         .field("state", state)
         .field("type", node_type)
     )
+
+    #test
+    if ts is not None:
+        latency_ms = (recv_time - float(ts)) * 1000
+        point = point.field("latency_ms", latency_ms)
+
+    lost = 0
+
+    #test - lascia solo la riga write_api e ricorda di cambiare la firma
+    if seq is not None:
+        # lost da gap nel seq
+        if node_id in seq_tracker:
+            gap = seq - seq_tracker[node_id] - 1
+            if gap > 0:
+                lost = gap
+        seq_tracker[node_id] = seq
+
+        # lost da gap temporale (pacchetti mai generati per coda piena)
+        if node_id in last_heartbeat_time:
+            elapsed = recv_time - last_heartbeat_time[node_id]
+            expected_interval = get_current_rate(node_id, state)
+            time_gap_lost = max(0, int(elapsed / expected_interval) - 1)
+            lost = max(lost, time_gap_lost)
+
+        last_heartbeat_time[node_id] = recv_time
+        point = point.field("seq", seq)
+        point = point.field("lost_packets", lost)
+
     write_api.write(bucket=BUCKET, org=ORG, record=point)
 
 
@@ -166,8 +230,11 @@ def on_message(client, userdata, msg):
     elif topic_parts[0] == "health" and topic_parts[-1] == "heartbeat":
         state = payload.get("state", "NORMAL")
         node_type = payload.get("type", "unknown")
-        write_heartbeat(node_id, state, node_type)
-        print(f"[Heartbeat] node_id={node_id} type={node_type} state={state}")
+        seq = payload.get("seq") #test
+        ts = payload.get("ts") #test
+        #write_heartbeat(node_id, state, node_type)
+        write_heartbeat(node_id, state, node_type, seq=seq, ts=ts) #test
+        print(f"[Heartbeat] node_id={node_id} type={node_type} state={state}  seq={seq}") #seq è per il test
     elif topic_parts[0] == "alarm":
         event = payload.get("event")
         if not event:
