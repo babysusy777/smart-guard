@@ -28,12 +28,20 @@ mqtt_client.loop_start()
 POLL_INTERVAL_SECONDS = 10
 
 #failure detection thresholds
-ALARM_SPEEDUP_FACTOR = 10 
-MISSED_NORMAL = 3
-MISSED_ALARM = 6
 FALLBACK_PATIENT_RATE_SECONDS = 30
-FALLBACK_CAREGIVER_RATE_SECONDS = 60
-MAX_CONGESTION_RATE_SECONDS = 240
+FALLBACK_CAREGIVER_RATE_SECONDS = 60 # da capire se toglierle
+
+# failure detection thresholds based on total silence
+WARNING_SILENCE_PATIENT_SECONDS = 60
+CRITICAL_SILENCE_PATIENT_SECONDS = 90
+
+WARNING_SILENCE_CAREGIVER_SECONDS = 90
+CRITICAL_SILENCE_CAREGIVER_SECONDS = 120
+
+# during an active fall alarm, silence is more dangerous
+WARNING_SILENCE_ALARM_SECONDS = 15
+CRITICAL_SILENCE_ALARM_SECONDS = 30
+
 
 #returns {node_id: last_heartbeat_datetime} for every node that has published at least one heartbeat in the last hour
 def get_last_heartbeats():
@@ -153,6 +161,20 @@ def get_effective_rate(node_id, node_type, configured_rates):
 
     return rate
 
+def get_silence_thresholds(node_type, has_active_alarm):
+
+    # patient con fall: warning dopo 15s senza heartbit, critical dop 30s senza heartbit
+    if has_active_alarm:
+        return WARNING_SILENCE_ALARM_SECONDS, CRITICAL_SILENCE_ALARM_SECONDS
+
+    # warning dopo 90 secondi senza heartbit; critical dopo 120s senza heartbit
+    if node_type == "caregiver":
+        return WARNING_SILENCE_CAREGIVER_SECONDS, CRITICAL_SILENCE_CAREGIVER_SECONDS
+
+    # default: patient or unknown
+    # warning dopo 60 secondi senza heartbit; critical dopo 90s senza heartbit
+    return WARNING_SILENCE_PATIENT_SECONDS, CRITICAL_SILENCE_PATIENT_SECONDS
+
 
 def poll_once():
     last_heartbeats = get_last_heartbeats()
@@ -172,47 +194,37 @@ def poll_once():
         elapsed = (now - last_seen).total_seconds()
         has_active_alarm = node_id in active_alarms
         node_type = node_types.get(node_id, "unknown")
+        rate = get_effective_rate(node_id, node_type, configured_rates)
 
-        rate = get_effective_rate(node_id, node_type, configured_rates)   
+        warning_threshold, critical_threshold = get_silence_thresholds(node_type=node_type, has_active_alarm=has_active_alarm)
 
-        if has_active_alarm:
-            alarm_interval = max(rate / ALARM_SPEEDUP_FACTOR, 2.0)
-            threshold = max(MISSED_ALARM * alarm_interval, 15.0)
-        else:
-            threshold = MISSED_NORMAL * rate
-        
         previous_severity = last_failure_statuses.get(node_id)
-        heartbeat_missing = elapsed > threshold
-        congestion_limit_reached = rate >= MAX_CONGESTION_RATE_SECONDS
 
-        if heartbeat_missing:
-            if previous_severity == "CRITICAL":
-                # Once a node is CRITICAL, keep it CRITICAL until a heartbeat is restored.
-                severity = "CRITICAL"
-            elif congestion_limit_reached:
-                # The node becomes CRITICAL only after congestion adaptation reached max rate.
-                severity = "CRITICAL"
-            else:
-                # Heartbeats are missing, but the adaptive mechanism has not reached its limit yet.
-                # We do not notify caregivers/patients yet.
-                severity = "WARNING"
+        if elapsed > critical_threshold:
+            severity = "CRITICAL"
+        elif elapsed > warning_threshold:
+            severity = "WARNING"
         else:
             severity = "NORMAL"
+
+        
+        threshold = critical_threshold
 
         write_failure_status(node_id, severity)
 
         if severity == "WARNING":
             print(f"[FailureDetector] {node_id}: WARNING "
                 f"(type={node_type}, no heartbeat for {elapsed:.1f}s, "
-                f"threshold={threshold:.1f}s, active_alarm={has_active_alarm}, "
-                f"rate={rate}s, max_rate={MAX_CONGESTION_RATE_SECONDS}s). "
-                f"Waiting for congestion adaptation to reach max before CRITICAL.")
+                f"warning_threshold={warning_threshold:.1f}s, "
+                f"critical_threshold={critical_threshold:.1f}s, "
+                f"active_alarm={has_active_alarm}, rate={rate}s). "
+                f"Possible packet loss due to congestion, waiting before CRITICAL.")
 
         if severity == "CRITICAL":
             print(f"[FailureDetector] {node_id}: CRITICAL "
-                  f"(type={node_type}, no heartbeat for {elapsed:.1f}s, "
-                  f"threshold={threshold:.1f}s, active_alarm={has_active_alarm}, "
-                  f"rate={rate}s)")
+                f"(type={node_type}, no heartbeat for {elapsed:.1f}s, "
+                f"critical_threshold={critical_threshold:.1f}s, "
+                f"active_alarm={has_active_alarm}, rate={rate}s)")
 
             if previous_severity != "CRITICAL":
                 if node_type == "patient":
@@ -222,6 +234,7 @@ def poll_once():
                 else:
                     print(f"[FailureDetector] Unknown node type for {node_id}. "
                           f"No external notification sent.")  
+                    
         elif previous_severity == "CRITICAL" and severity == "NORMAL":
             write_recovery_event(node_id=node_id, elapsed=elapsed, threshold=threshold, has_active_alarm=has_active_alarm, rate=rate)
 
