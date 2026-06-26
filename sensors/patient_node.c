@@ -190,31 +190,7 @@ static uint8_t force_sound_on_fall = 0;
 PROCESS(patient_node_process, "Patient node");
 AUTOSTART_PROCESSES(&patient_node_process);
 
-static uint8_t publish_mqtt_registration(void) {
-  mqtt_status_t publish_status;
 
-  if(state != STATE_SUBSCRIBED) {
-    LOG_INFO("Cannot publish MQTT registration: MQTT not subscribed\n");
-    return 0;
-  }
-
-  // rate a valore nominale
-
-  set_publish_period(NORMAL_STATUS_INTERVAL);
-  publish_counter = publish_every_n_ticks;
-
-  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}", client_id);
-
-  publish_status = mqtt_publish(&conn, NULL, registration_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
-
-  if(publish_status == MQTT_STATUS_OK) {
-    LOG_INFO("MQTT registration queued successfully on %s\n", registration_topic);
-    return 1;
-  }
-
-  LOG_WARN("MQTT registration could not be queued on %s: status=%d\n", registration_topic, publish_status);
-  return 0;
-}
 
 //check if the node has network connectivity (global IPv6 address + default route)
 static bool have_connectivity(void) {
@@ -613,6 +589,32 @@ static void client_chunk_handler(coap_message_t *response) {
   len = coap_get_payload(response, &chunk);
   LOG_INFO("Registration response: %.*s\n", len, (char *)chunk);
   coap_registered = 1;
+}
+
+static uint8_t publish_mqtt_registration(void) {
+  mqtt_status_t publish_status;
+
+  if(state != STATE_SUBSCRIBED) {
+    LOG_INFO("Cannot publish MQTT registration: MQTT not subscribed\n");
+    return 0;
+  }
+
+  // rate a valore nominale
+
+  set_publish_period(NORMAL_STATUS_INTERVAL);
+  publish_counter = publish_every_n_ticks;
+
+  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}", client_id);
+
+  publish_status = mqtt_publish(&conn, NULL, registration_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
+
+  if(publish_status == MQTT_STATUS_OK) {
+    LOG_INFO("MQTT registration queued successfully on %s\n", registration_topic);
+    return 1;
+  }
+
+  LOG_WARN("MQTT registration could not be queued on %s: status=%d\n", registration_topic, publish_status);
+  return 0;
 }
 
 
