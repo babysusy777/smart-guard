@@ -255,7 +255,7 @@ def poll_once():
 
 
 def publish_mqtt_event(topic, payload):
-    message = json.dumps(payload)
+    message = json.dumps(payload, separators=(',', ':'))
     result = mqtt_client.publish(topic, message, qos=1, retain=False)
 
     if result.rc != mqtt.MQTT_ERR_SUCCESS:
