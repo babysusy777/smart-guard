@@ -143,18 +143,38 @@ void set_publish_period(int seconds) {
   }
 }
 
-#define MAX_ACTIVE_ALARMS 4   //maximu number of alarms that the caregiver can handle at once: it's equal to the number of patients 
+#define MAX_PATIENTS 4
 
-//list to handle the patients that generated the alarm
+#define PATIENT_EVENT_NONE          0
+#define PATIENT_EVENT_FALL          1
+#define PATIENT_EVENT_NODE_CRITICAL 2
+
 typedef struct {
-  char node_id[NODE_ID_BUFFER_SIZE]; //id
-} alarm_entry_t;
+  char node_id[NODE_ID_BUFFER_SIZE];
+  uint8_t used;
+  uint8_t has_fall;
+  uint8_t is_critical;
+  uint8_t fall_seen;
+  uint8_t critical_seen;
+  uint16_t fall_order;
+  uint16_t critical_order;
+} patient_status_t;
 
-//alarms are published at the end of the queue and are handled from the first one to the last one
-static alarm_entry_t alarm_queue[MAX_ACTIVE_ALARMS];
-static uint8_t queue_count = 0;  //index of the first arrived alarm, the once that the button confirms
+static patient_status_t patients[MAX_PATIENTS];
+static uint16_t next_event_order = 1;
 
 static uint8_t alarm_pending = 0;
+
+static void start_alarm_blink(void) {
+  if(!alarm_pending) {
+    alarm_pending = 1;
+    printf("\xF0\x9F\x94\x94 ALARM\n");
+  }
+}
+static void stop_alarm_blink(void) {
+  alarm_pending = 0;
+  leds_single_off(LEDS_RED);
+}
 
 //red LED blinks during the alarm
 #define ALARM_BLINK_PERIOD (CLOCK_SECOND / 4)
@@ -171,15 +191,9 @@ static uint8_t publish_mqtt_registration(void) {
     return 0;
   }
 
-  snprintf(app_buffer, APP_BUFFER_SIZE,
-           "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}",
-           client_id);
+  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}", client_id);
 
-  publish_status = mqtt_publish(&conn, NULL, registration_topic,
-                                (uint8_t *)app_buffer,
-                                strlen(app_buffer),
-                                MQTT_QOS_LEVEL_0,
-                                MQTT_RETAIN_OFF);
+  publish_status = mqtt_publish(&conn, NULL, registration_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 
   if(publish_status == MQTT_STATUS_OK) {
     LOG_INFO("MQTT registration queued successfully on %s\n", registration_topic);
@@ -219,51 +233,216 @@ static void enter_reconnect_or_manual_restart(void) {
   }
 }
 
-//adds alarm at the end of the queue
-static void alarm_queue_push(const char *node_id) {
+static patient_status_t *find_patient(const char *node_id) {
   uint8_t i;
 
-  //if that patient has already an alarm, it won't be reinserted 
-  for(i = 0; i < queue_count; i++) {
-    if(strcmp(alarm_queue[i].node_id, node_id) == 0) {
-      return;
+  for(i = 0; i < MAX_PATIENTS; i++) {
+    if(patients[i].used &&
+       strncmp(patients[i].node_id, node_id, NODE_ID_BUFFER_SIZE) == 0) {
+      return &patients[i];
     }
   }
 
-  if(queue_count >= MAX_ACTIVE_ALARMS) {
-    LOG_ERR("Coda allarmi piena, impossibile aggiungere %s\n", node_id);
+  return NULL;
+}
+
+static patient_status_t *get_or_create_patient(const char *node_id) {
+  uint8_t i;
+  patient_status_t *patient;
+
+  patient = find_patient(node_id);
+  if(patient != NULL) {
+    return patient;
+  }
+
+  for(i = 0; i < MAX_PATIENTS; i++) {
+    if(!patients[i].used) {
+      memset(&patients[i], 0, sizeof(patient_status_t));
+      strncpy(patients[i].node_id, node_id, NODE_ID_BUFFER_SIZE - 1);
+      patients[i].node_id[NODE_ID_BUFFER_SIZE - 1] = '\0';
+      patients[i].used = 1;
+      return &patients[i];
+    }
+  }
+
+  LOG_ERR("Patient table full, impossible to add %s\n", node_id);
+  return NULL;
+}
+
+static void release_patient_if_idle(patient_status_t *patient) {
+  if(patient != NULL && !patient->has_fall && !patient->is_critical) {
+    memset(patient, 0, sizeof(patient_status_t));
+  }
+}
+
+static uint8_t has_active_patient_events(void) {
+  uint8_t i;
+
+  for(i = 0; i < MAX_PATIENTS; i++) {
+    if(patients[i].used && (patients[i].has_fall || patients[i].is_critical)) {
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+static uint8_t count_active_patient_events(void) {
+  uint8_t i;
+  uint8_t count = 0;
+
+  for(i = 0; i < MAX_PATIENTS; i++) {
+    if(patients[i].used) {
+      if(patients[i].has_fall) {
+        count++;
+      }
+      if(patients[i].is_critical) {
+        count++;
+      }
+    }
+  }
+
+  return count;
+}
+
+static void clear_patient_table(void) {
+  memset(patients, 0, sizeof(patients));
+  next_event_order = 1;
+}
+
+static void set_patient_fall(const char *node_id) {
+  patient_status_t *patient;
+
+  patient = get_or_create_patient(node_id);
+  if(patient == NULL) {
     return;
   }
 
-  strncpy(alarm_queue[queue_count].node_id, node_id, NODE_ID_BUFFER_SIZE - 1);
-  alarm_queue[queue_count].node_id[NODE_ID_BUFFER_SIZE - 1] = '\0';
-  queue_count++;
-}
-
-//removes the first element from the queue
-//all the other alarms will be advanced of one position 
-static void alarm_queue_pop_front(void) {
-  uint8_t i;
-  if(queue_count == 0) return;
-
-  for(i = 0; i < queue_count - 1; i++) {
-    alarm_queue[i] = alarm_queue[i + 1];
+  if(!patient->has_fall) {
+    patient->has_fall = 1;
+    patient->fall_seen = 0;
+    patient->fall_order = next_event_order++;
   }
-  queue_count--;
 }
 
-//removes a specific node from the queue
-//used when the patient deletes the alarm by clickig the button for more than 3s
-static void alarm_queue_remove(const char *node_id) {
-  uint8_t i, j;
-  for(i = 0; i < queue_count; i++) {
-    if(strcmp(alarm_queue[i].node_id, node_id) == 0) {
-      for(j = i; j < queue_count - 1; j++) {
-        alarm_queue[j] = alarm_queue[j + 1];
-      }
-      queue_count--;
-      return;
+static void clear_patient_fall(const char *node_id) {
+  patient_status_t *patient;
+
+  patient = find_patient(node_id);
+  if(patient == NULL) {
+    return;
+  }
+
+  patient->has_fall = 0;
+  patient->fall_seen = 0;
+  patient->fall_order = 0;
+
+  release_patient_if_idle(patient);
+}
+
+static void set_patient_critical(const char *node_id) {
+  patient_status_t *patient;
+
+  patient = get_or_create_patient(node_id);
+  if(patient == NULL) {
+    return;
+  }
+
+  if(!patient->is_critical) {
+    patient->is_critical = 1;
+    patient->critical_seen = 0;
+    patient->critical_order = next_event_order++;
+  }
+}
+
+static void clear_patient_critical(const char *node_id) {
+  patient_status_t *patient;
+
+  patient = find_patient(node_id);
+  if(patient == NULL) {
+    return;
+  }
+
+  patient->is_critical = 0;
+  patient->critical_seen = 0;
+  patient->critical_order = 0;
+
+  release_patient_if_idle(patient);
+}
+
+static uint8_t get_next_pending_event(char *node_id_out, uint8_t *event_type_out) {
+  uint8_t i;
+  uint16_t best_order = 0;
+  patient_status_t *best_patient = NULL;
+  uint8_t best_event_type = PATIENT_EVENT_NONE;
+
+  for(i = 0; i < MAX_PATIENTS; i++) {
+    if(!patients[i].used) {
+      continue;
     }
+
+    if(patients[i].has_fall && !patients[i].fall_seen) {
+      if(best_order == 0 || patients[i].fall_order < best_order) {
+        best_order = patients[i].fall_order;
+        best_patient = &patients[i];
+        best_event_type = PATIENT_EVENT_FALL;
+      }
+    }
+
+    if(patients[i].is_critical && !patients[i].critical_seen) {
+      if(best_order == 0 || patients[i].critical_order < best_order) {
+        best_order = patients[i].critical_order;
+        best_patient = &patients[i];
+        best_event_type = PATIENT_EVENT_NODE_CRITICAL;
+      }
+    }
+  }
+
+  if(best_patient == NULL) {
+    return 0;
+  }
+
+  strncpy(node_id_out, best_patient->node_id, NODE_ID_BUFFER_SIZE - 1);
+  node_id_out[NODE_ID_BUFFER_SIZE - 1] = '\0';
+  *event_type_out = best_event_type;
+
+  return 1;
+}
+
+static void mark_pending_event_seen(const char *node_id, uint8_t event_type) {
+  patient_status_t *patient;
+
+  patient = find_patient(node_id);
+  if(patient == NULL) {
+    return;
+  }
+
+  if(event_type == PATIENT_EVENT_FALL) {
+    /* Local acknowledgement: remove the FALL notification from caregiver memory.
+     * The patient will stop the local alarm after receiving the MQTT ACK.
+     * A later RESOLVED event is still handled idempotently.
+     */
+    patient->has_fall = 0;
+    patient->fall_seen = 0;
+    patient->fall_order = 0;
+
+  } else if(event_type == PATIENT_EVENT_NODE_CRITICAL) {
+    /* A critical node cannot be cleared by the caregiver button.
+     * The button only marks the notification as seen; the state remains critical
+     * until NODE_RECOVERED is received.
+     */
+    patient->critical_seen = 1;
+    patient->critical_order = 0;
+  }
+
+  release_patient_if_idle(patient);
+}
+
+static void update_alarm_indicator(void) {
+  if(has_active_patient_events()) {
+    start_alarm_blink();
+  } else {
+    stop_alarm_blink();
   }
 }
 
@@ -287,18 +466,6 @@ static int extract_node_id(const uint8_t *payload, uint16_t payload_len, char *o
     }
   }
   return 0;
-}
-
-//activate red LED blinking
-static void start_alarm_blink(void) {
-  alarm_pending = 1;
-  printf("\xF0\x9F\x94\x94 ALARM\n"); //logs the alarm
-}
-
-//stop led blinking and switch off the led
-static void stop_alarm_blink(void) {
-  alarm_pending = 0;
-  leds_single_off(LEDS_RED);
 }
 
 
@@ -345,7 +512,7 @@ static void handle_battery_depleted(void) {
 
   /* Stop alarm handling */
   alarm_pending = 0;
-  queue_count = 0;
+  clear_patient_table();
 
   /* Stop battery warning */
   low_battery_mode = 0;
@@ -430,21 +597,18 @@ static void pub_handler(const char *topic, uint16_t topic_len, const uint8_t *ch
   if(chunk_contains(chunk, chunk_len, "\"event\":\"FALL\"")) {
     LOG_INFO("FALL alarm received from %s\n", node_id);
 
-    alarm_queue_push(node_id);
-    start_alarm_blink();
+    set_patient_fall(node_id);
+    update_alarm_indicator();
 
-    LOG_INFO("Alarm inserted in queue. Queue size: %d\n", queue_count);
+    LOG_INFO("FALL stored in patient table. Active events: %u\n", count_active_patient_events());
     return;
   }
 
   if(chunk_contains(chunk, chunk_len, "\"event\":\"RESOLVED\"")) {
     LOG_INFO("Alarm resolved by patient %s\n", node_id);
 
-    alarm_queue_remove(node_id);
-
-    if(queue_count == 0) {
-      stop_alarm_blink();
-    }
+    clear_patient_fall(node_id);
+    update_alarm_indicator();
 
     return;
   }
@@ -452,8 +616,8 @@ static void pub_handler(const char *topic, uint16_t topic_len, const uint8_t *ch
   if(chunk_contains(chunk, chunk_len, "\"event\":\"NODE_CRITICAL\"")) {
     LOG_ERR("Patient node %s is CRITICAL: heartbeat missing\n", node_id);
 
-    alarm_queue_push(node_id);
-    start_alarm_blink();
+    set_patient_critical(node_id);
+    update_alarm_indicator();
 
     return;
   }
@@ -461,11 +625,8 @@ static void pub_handler(const char *topic, uint16_t topic_len, const uint8_t *ch
   if(chunk_contains(chunk, chunk_len, "\"event\":\"NODE_RECOVERED\"")) {
     LOG_INFO("Patient node %s recovered: heartbeat restored\n", node_id);
 
-    alarm_queue_remove(node_id);
-
-    if(queue_count == 0) {
-      stop_alarm_blink();
-    }
+    clear_patient_critical(node_id);
+    update_alarm_indicator();
 
     return;
   }
@@ -473,7 +634,7 @@ static void pub_handler(const char *topic, uint16_t topic_len, const uint8_t *ch
   if(chunk_contains(chunk, chunk_len, "\"event\":\"BATTERY_LOW\"")) {
     LOG_WARN("Patient node %s has low battery. Notification only, no ACK required.\n", node_id);
     // IMPORTANT:
-    // BATTERY_LOW is not pushed into alarm_queue. The caregiver does not need to press the button.
+    // BATTERY_LOW is not pushed in the patient table. The caregiver does not need to press the button.
     // No ACK is sent for this event.
      
     return;
@@ -688,28 +849,35 @@ PROCESS_THREAD(caregiver_process, ev, data)
 
     //bottone pressed: caregiver confirms the first alarm received 
     if(ev == button_hal_press_event) {
-      LOG_INFO("PRESSED BUTTON TO CONFIRM ALARM\n");
-        if(queue_count > 0) {
-          LOG_INFO("queue_count = %d\n", queue_count);
-          LOG_INFO("QUEUE_COUNT>=0\n");
-          char confirmed_id[NODE_ID_BUFFER_SIZE];
-          strncpy(confirmed_id, alarm_queue[0].node_id, NODE_ID_BUFFER_SIZE);
+  char confirmed_id[NODE_ID_BUFFER_SIZE];
+  uint8_t confirmed_event_type;
 
-          LOG_INFO("Caregiver confirms alarm for %s (coda rimanente: %d)\n",
-                  confirmed_id, queue_count - 1);
+  LOG_INFO("PRESSED BUTTON TO HANDLE PATIENT NOTIFICATION\n");
 
-          if(state == STATE_SUBSCRIBED) {
-          publish_ack(confirmed_id);
-          }
+  if(get_next_pending_event(confirmed_id, &confirmed_event_type)) {
 
-          alarm_queue_pop_front();
+    if(confirmed_event_type == PATIENT_EVENT_FALL) {
+      LOG_INFO("Caregiver confirms FALL alarm for %s\n", confirmed_id);
 
-          if(queue_count == 0) {
-          stop_alarm_blink();
-          }
-          //otherwise the LED blinking continues because there is at least one alarm in the queue 
-        }
+      if(state == STATE_SUBSCRIBED) {
+        publish_ack(confirmed_id);
+      }
+
+      mark_pending_event_seen(confirmed_id, confirmed_event_type);
+
+    } else if(confirmed_event_type == PATIENT_EVENT_NODE_CRITICAL) {
+      LOG_WARN("Caregiver has seen NODE_CRITICAL for %s. Patient remains critical until NODE_RECOVERED.\n",
+               confirmed_id);
+
+      mark_pending_event_seen(confirmed_id, confirmed_event_type);
     }
+
+    update_alarm_indicator();
+
+  } else {
+    LOG_INFO("No unseen FALL/NODE_CRITICAL notifications to handle\n");
+  }
+}
 
     if(ev == PROCESS_EVENT_TIMER && data == &battery_timer) {
       if(battery_level > BATTERY_DRAIN_STEP_PERCENT) {
@@ -755,13 +923,13 @@ PROCESS_THREAD(caregiver_process, ev, data)
 
     if((ev == PROCESS_EVENT_TIMER && data == &periodic_timer) || ev == PROCESS_EVENT_POLL) {
       
-      LOG_INFO("DEBUG state=%u battery=%u low_battery=%u battery_dead=%u alarm_pending=%u queue_count=%u\n",
-         state,
-         battery_level,
-         low_battery_mode,
-         battery_dead,
-         alarm_pending,
-         queue_count);
+      LOG_INFO("DEBUG state=%u battery=%u low_battery=%u battery_dead=%u alarm_pending=%u active_events=%u\n",
+      state,
+      battery_level,
+      low_battery_mode,
+      battery_dead,
+      alarm_pending,
+      count_active_patient_events());
 
       if(state == STATE_INIT) {
         if(have_connectivity()) {
