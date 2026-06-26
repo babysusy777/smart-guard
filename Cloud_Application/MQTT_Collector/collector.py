@@ -25,6 +25,9 @@ ALARM_TOPIC = "alarm/+"
 BATTERY_TOPIC = "battery/+"
 REGISTRATION_TOPIC = "registration/#"
 
+NOMINAL_PATIENT_RATE_SECONDS = 30
+NOMINAL_CAREGIVER_RATE_SECONDS = 60
+
 def write_mqtt_registration(node_id, node_type, protocol="mqtt"):
     point = (
         Point("registration")
@@ -76,6 +79,13 @@ def get_current_rate(node_id, state):
             rate_cache[node_id] = (rate, now)
             return rate / 20.0 if state == "FALL" else rate
     return 1.5  # default FALL con rate 30s
+
+def get_nominal_rate(node_type):
+    if node_type == "caregiver":
+        return NOMINAL_CAREGIVER_RATE_SECONDS
+    if node_type == "patient":
+        return NOMINAL_PATIENT_RATE_SECONDS
+    return NOMINAL_PATIENT_RATE_SECONDS
 
 #writes a heartbeat point: a periodic status report from a patient/caregiver node
 #the Cloud App uses the timestamp of the most recent report for a given node_id to detect failures
@@ -224,9 +234,24 @@ def on_message(client, userdata, msg):
         event = payload.get("event", "ONLINE")
         node_type = payload.get("type", "unknown")
         protocol = payload.get("protocol", "mqtt")
+
         write_mqtt_registration(node_id, node_type, protocol)
         write_node_activity(node_id, node_type, event)
-        print(f"[MQTT Registration] node_id={node_id} type={node_type} protocol={protocol} event={event}")
+
+        if event == "ONLINE":
+            nominal_rate = get_nominal_rate(node_type)
+
+            write_config_rate(node_id=node_id,rate=nominal_rate,reason="mqtt_registration_nominal_reset")
+
+            # evita che get_current_rate() usi per altri 30s il vecchio rate congestionato
+            rate_cache.pop(node_id, None)
+
+            print(f"[MQTT Registration] node_id={node_id} type={node_type} "
+                f"protocol={protocol} event={event} nominal_rate={nominal_rate}s")
+        else:
+            print(f"[MQTT Registration] node_id={node_id} type={node_type} "
+                f"protocol={protocol} event={event}")
+            
     elif topic_parts[0] == "health" and topic_parts[-1] == "heartbeat":
         state = payload.get("state", "NORMAL")
         node_type = payload.get("type", "unknown")

@@ -214,6 +214,9 @@ static uint8_t publish_mqtt_registration(void) {
     return 0;
   }
 
+  set_publish_period(CAREGIVER_DEFAULT_PUBLISH_INTERVAL);
+  publish_counter = publish_every_n_ticks;
+
   snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}", client_id);
 
   publish_status = mqtt_publish(&conn, NULL, registration_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);

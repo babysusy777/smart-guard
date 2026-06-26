@@ -198,6 +198,11 @@ static uint8_t publish_mqtt_registration(void) {
     return 0;
   }
 
+  // rate a valore nominale
+
+  set_publish_period(NORMAL_STATUS_INTERVAL);
+  publish_counter = publish_every_n_ticks;
+
   snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}", client_id);
 
   publish_status = mqtt_publish(&conn, NULL, registration_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
