@@ -143,6 +143,7 @@ void set_publish_period(int seconds) {
   }
 }
 
+
 #define MAX_PATIENTS 4
 
 #define PATIENT_EVENT_NONE          0
@@ -174,6 +175,28 @@ static void start_alarm_blink(void) {
 static void stop_alarm_blink(void) {
   alarm_pending = 0;
   leds_single_off(LEDS_RED);
+}
+
+static void debug_patient_table(void) {
+  uint8_t i;
+
+  LOG_INFO("---- Patient table ----\n");
+
+  for(i = 0; i < MAX_PATIENTS; i++) {
+    if(patients[i].used) {
+      LOG_INFO("[%u] node_id=%s has_fall=%u is_critical=%u fall_seen=%u critical_seen=%u fall_order=%u critical_order=%u\n",
+               i,
+               patients[i].node_id,
+               patients[i].has_fall,
+               patients[i].is_critical,
+               patients[i].fall_seen,
+               patients[i].critical_seen,
+               patients[i].fall_order,
+               patients[i].critical_order);
+    }
+  }
+
+  LOG_INFO("-----------------------\n");
 }
 
 //red LED blinks during the alarm
@@ -439,6 +462,8 @@ static void mark_pending_event_seen(const char *node_id, uint8_t event_type) {
 }
 
 static void update_alarm_indicator(void) {
+  debug_patient_table();
+
   if(has_active_patient_events()) {
     start_alarm_blink();
   } else {
