@@ -20,7 +20,7 @@ query_api = influx_client.query_api()
 #rate adaptation parameters
 DEFAULT_RATE_SECONDS = 30 #values used if the node does not respond
 MAX_RATE_SECONDS = 240
-WINDOW_SECONDS = 5 * 20 #5 minutes
+WINDOW_SECONDS = 5 * 60 #5 minutes
 EXPECTED_RATIO_THRESHOLD = 0.7 #below 70% of expected heartbeats -> congestion
 POLL_INTERVAL_SECONDS = 20 #how often we check for congestion
 
