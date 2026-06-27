@@ -428,7 +428,7 @@ static uint8_t get_next_pending_event(char *node_id_out, uint8_t *event_type_out
     return 0;
   }
 
-  strncpy(node_id_out, best_patient->node_id, NODE_ID_BUFFER_SIZE - 1);
+  memcpy(node_id_out, best_patient->node_id, NODE_ID_BUFFER_SIZE - 1);
   node_id_out[NODE_ID_BUFFER_SIZE - 1] = '\0';
   *event_type_out = best_event_type;
 
@@ -786,6 +786,14 @@ PROCESS_THREAD(caregiver_process, ev, data)
 
   PROCESS_BEGIN();
 
+  //test led
+  leds_on(LEDS_RED);
+  clock_wait(CLOCK_SECOND * 3);
+  leds_off(LEDS_RED);
+  leds_on(LEDS_GREEN);
+  clock_wait(CLOCK_SECOND * 3);
+  leds_off(LEDS_GREEN);
+  leds_on(LEDS_BLUE);
   coap_activate_resource(&res_config, "config"); 
 
   // Client_id from MAC address 
