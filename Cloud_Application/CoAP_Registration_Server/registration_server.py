@@ -18,19 +18,18 @@ write_api = influx_client.write_api(write_options=SYNCHRONOUS)
 
 #writes a "registration" point: a (re)registration event for a node
 #each call creates a new point with the current timestamp
-def write_registration(node_id, node_type, protocol, ip_address):
+def write_registration(node_id, node_type, ip_address):
     point = (
         Point("registration")
         .tag("node_id", node_id)
         .tag("type", node_type)
-        .field("protocol", protocol)
         .field("ip_address", ip_address)
     )
     write_api.write(bucket=BUCKET, org=ORG, record=point)
 
 
 #resource CoAP "/registration"
-#receives a POST from the nodes (patient or caregiver) at startup, with a JSON payload like: {"node_id":"a1b2c3","type":"patient","protocol":"mqtt"}
+#receives a POST from the nodes (patient or caregiver) at startup, with a JSON payload like: {"node_id":"a1b2c3","type":"patient"}
 class RegistrationResource(resource.Resource):
     async def render_post(self, request):
         try:
@@ -43,7 +42,6 @@ class RegistrationResource(resource.Resource):
 
         node_id = payload.get("node_id")
         node_type = payload.get("type")
-        protocol = payload.get("protocol", "unknown")
 
         if not node_id or not node_type:
             return aiocoap.Message(
@@ -53,9 +51,9 @@ class RegistrationResource(resource.Resource):
 
         ip_address = str(request.remote.sockaddr[0])
 
-        write_registration(node_id, node_type, protocol, ip_address)
+        write_registration(node_id, node_type, ip_address)
 
-        print(f"[Registration] node_id={node_id} type={node_type} protocol={protocol} ip={ip_address}")
+        print(f"[Registration] node_id={node_id} type={node_type} ip={ip_address}")
 
         response_payload = json.dumps({"status": "registered", "node_id": node_id}).encode()
         return aiocoap.Message(code=aiocoap.CHANGED, payload=response_payload)

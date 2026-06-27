@@ -62,7 +62,6 @@ class DeviceCLI:
                     print("----------------------------------------")
                     print(f"ID:        {device['node_id']}")
                     print(f"Tipo:      {device['type']}")
-                    print(f"Protocollo:{device['protocol']}")
                     print(f"Data:      {device['time']}")
 
                     if expected_type == "patient":
@@ -96,7 +95,6 @@ class DeviceCLI:
         from(bucket: "{INFLUX_BUCKET}")
           |> range(start: time(v: "{start_iso}"))
           |> filter(fn: (r) => r["_measurement"] == "registration")
-          |> filter(fn: (r) => r["_field"] == "protocol")
           |> filter(fn: (r) => r["type"] == "{expected_type}")
           |> sort(columns: ["_time"], desc: true)
           |> limit(n: 1)
@@ -109,7 +107,6 @@ class DeviceCLI:
                 return {
                     "node_id": record.values.get("node_id", "unknown"),
                     "type": record.values.get("type", "unknown"),
-                    "protocol": record.get_value(),
                     "time": record.get_time().astimezone().strftime(
                         "%d/%m/%Y %H:%M:%S"
                     ),
@@ -122,7 +119,6 @@ class DeviceCLI:
         from(bucket: "{INFLUX_BUCKET}")
           |> range(start: -30d)
           |> filter(fn: (r) => r["_measurement"] == "registration")
-          |> filter(fn: (r) => r["_field"] == "protocol")
           |> sort(columns: ["_time"], desc: true)
         '''
 
@@ -143,7 +139,6 @@ class DeviceCLI:
                     devices[node_id] = {
                         "node_id": node_id,
                         "type": record.values.get("type", "unknown"),
-                        "protocol": record.get_value(),
                         "time": record.get_time().astimezone().strftime(
                             "%d/%m/%Y %H:%M:%S"
                         ),
@@ -153,7 +148,7 @@ class DeviceCLI:
         print()
         print("Dispositivi registrati")
         print("---------------------------------------------------------------")
-        print(f"{'ID':<20}{'NOME':<20}{'TIPO':<14}{'PROTOCOLLO':<12}{'ULTIMA REG.'}")
+        print(f"{'ID':<20}{'NOME':<20}{'TIPO':<14}{'ULTIMA REG.'}")
         print("---------------------------------------------------------------")
 
         if not devices:
@@ -162,7 +157,7 @@ class DeviceCLI:
 
         for d in devices.values():
             nome = names.get(d["node_id"], "-")
-            print(f"{d['node_id']:<20}{nome:<20}{d['type']:<14}{d['protocol']:<12}{d['time']}")
+            print(f"{d['node_id']:<20}{nome:<20}{d['type']:<14}{d['time']}")
 
 
     #Gestione nomi 
@@ -218,7 +213,6 @@ class DeviceCLI:
         from(bucket: "{INFLUX_BUCKET}")
           |> range(start: -1h)
           |> filter(fn: (r) => r["_measurement"] == "registration")
-          |> filter(fn: (r) => r["_field"] == "protocol")
           |> group(columns: ["node_id"])
           |> last()
         '''

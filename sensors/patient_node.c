@@ -71,8 +71,6 @@ static unsigned long reconnect_ticks = 0;
 static unsigned long connecting_ticks = 0;
 static uint8_t alarm_sound = 0;
 
-static uint32_t heartbeat_seq = 0;  //per test
-
 #define FALL_ALARM_RETRY_INTERVAL (2 * CLOCK_SECOND / STATE_MACHINE_PERIODIC)
 
 #define MAX_TOTAL_RECONNECT_ATTEMPTS 32
@@ -97,7 +95,7 @@ static struct etimer sampling_timer;
 static uint8_t consecutive_publish_failures = 0;
 #define MAX_CONSECUTIVE_FAILURES 5
 
-// Batteria
+//Batteria
 
 #define BATTERY_SIMULATION_PERIOD      (30 * CLOCK_SECOND)
 #define BATTERY_DRAIN_STEP_PERCENT     1                    //ogni 30 secondi si scarica dell'1%
@@ -143,7 +141,7 @@ static unsigned long mqtt_registration_retry_counter = 0;
 #define REGISTRATION_SERVER_EP "coap://[fd00::1]:5683"
 #define REGISTRATION_PATH "/registration"
 
-// Coap Registration Logic
+//Coap Registration Logic
 #define MAX_COAP_REG_ATTEMPTS 3
 #define COAP_REG_RETRY_INTERVAL (5 * CLOCK_SECOND)
 
@@ -162,7 +160,7 @@ static unsigned long resolved_retry_counter = 0;
 #define ALARM_SPEEDUP_FACTOR 20 //alarm interval becomes equal to publish_every_n_ticks / FACTOR 
 //FACTOR is sent by cloud application to regulate the congestion
 
-// Resource CoAP /config
+//Resource CoAP /config
 extern coap_resource_t res_config;
 
 //patient status                                        
@@ -189,7 +187,6 @@ static uint8_t force_sound_on_fall = 0;
 
 PROCESS(patient_node_process, "Patient node");
 AUTOSTART_PROCESSES(&patient_node_process);
-
 
 
 //check if the node has network connectivity (global IPv6 address + default route)
@@ -320,7 +317,7 @@ static void pub_handler(const char *topic, uint16_t topic_len, const uint8_t *ch
     patient_state = PATIENT_NORMAL;
     force_fall_sequence = 0;
     reset_window();
-    leds_single_off(LEDS_RED);
+    leds_off(LEDS_RED);
 
     if(alarm_sound) {
       alarm_sound = 0;
@@ -341,11 +338,7 @@ static uint8_t publish_heartbeat(void) {
   const char *state_str = (patient_state == PATIENT_FALL) ? "FALL" : "NORMAL";
   mqtt_status_t publish_status;
 
-  //due righe seguenti per i test - ricorda di rimuovere il commeno a snprintf sotto
-  uint32_t now_seconds = clock_seconds();
-  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"state\":\"%s\",\"seq\":%lu,\"ts\":%lu}", client_id, state_str, (unsigned long)heartbeat_seq, (unsigned long)now_seconds);
-
-  //snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"state\":\"%s\"}", client_id, state_str);
+  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"state\":\"%s\"}", client_id, state_str);
 
   publish_status = mqtt_publish(&conn, NULL, heartbeat_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 
@@ -360,8 +353,6 @@ static uint8_t publish_heartbeat(void) {
     }
     return 0;
   }
-
-   heartbeat_seq++;
   consecutive_publish_failures = 0;
   return 1;
 }
@@ -392,8 +383,7 @@ static void enter_reconnect_or_manual_restart(void) {
 
   if(reconnect_attempts >= MAX_TOTAL_RECONNECT_ATTEMPTS) {
     state = STATE_MANUAL_RESTART_REQUIRED;
-    LOG_ERR("MQTT reconnection failed after %u attempts. Manual power cycle required: switch patient node OFF and ON.\n",
-            reconnect_attempts);
+    LOG_ERR("MQTT reconnection failed after %u attempts. Manual power cycle required: switch patient node OFF and ON.\n", reconnect_attempts);
     return;
   }
 
@@ -438,7 +428,7 @@ static void handle_battery_depleted(void) {
   yellow_blink_active = 0;
   yellow_led_on = 0;
 
-  leds_single_off(LEDS_RED);
+  leds_off(LEDS_RED);
   leds_single_off(LEDS_YELLOW);
 
   etimer_stop(&sampling_timer);
@@ -496,15 +486,9 @@ static void check_battery_thresholds(void) {
 static uint8_t publish_alarm(void) {
   mqtt_status_t publish_status;
 
-  snprintf(app_buffer, APP_BUFFER_SIZE,
-           "{\"node_id\":\"%s\",\"event\":\"FALL\"}",
-           client_id);
+  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"event\":\"FALL\"}", client_id);
 
-  publish_status = mqtt_publish(&conn, NULL, alarm_topic,
-                                (uint8_t *)app_buffer,
-                                strlen(app_buffer),
-                                MQTT_QOS_LEVEL_1,
-                                MQTT_RETAIN_OFF);
+  publish_status = mqtt_publish(&conn, NULL, alarm_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_1, MQTT_RETAIN_OFF);
 
   if(publish_status == MQTT_STATUS_OK) {
     LOG_WARN("FALL alarm queued successfully\n");
@@ -604,7 +588,7 @@ static uint8_t publish_mqtt_registration(void) {
   set_publish_period(NORMAL_STATUS_INTERVAL);
   publish_counter = publish_every_n_ticks;
 
-  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}", client_id);
+  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"event\":\"ONLINE\"}", client_id);
 
   publish_status = mqtt_publish(&conn, NULL, registration_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 
@@ -677,7 +661,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
     coap_init_message(request, COAP_TYPE_CON, COAP_POST, 0);
     coap_set_header_uri_path(request, REGISTRATION_PATH);
 
-    snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\",\"protocol\":\"mqtt\"}", client_id);
+    snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"patient\"}", client_id);
 
     coap_set_payload(request, (uint8_t *)app_buffer, strlen(app_buffer));
 
@@ -730,7 +714,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
       patient_state = PATIENT_NORMAL;
       force_fall_sequence = 0;
       reset_window();
-      leds_single_off(LEDS_RED);
+      leds_off(LEDS_RED);
 
       if(alarm_sound) {
         alarm_sound = 0;
@@ -810,7 +794,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
         if(predicted_state == PATIENT_FALL) {
           patient_state = PATIENT_FALL;
           LOG_INFO("FALL detected, patient state changed to FALL\n");
-          leds_single_on(LEDS_RED);
+          leds_on(LEDS_RED);
           if((state != STATE_SUBSCRIBED || force_sound_on_fall) && !alarm_sound){ // in tutti i casi in cui non può inviare messaggi, oppure se il caregiver è CRITICAL 
             alarm_sound = 1;
             LOG_INFO("Alarm Sound ON!\n"); // Simulare suono allarme
@@ -829,7 +813,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
         } else {
           if(!alarm_active) {
             patient_state = PATIENT_NORMAL;
-            leds_single_off(LEDS_RED);
+            leds_off(LEDS_RED);
           }
         }
         reset_window();
@@ -848,8 +832,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
 
     if((ev == PROCESS_EVENT_TIMER && data == &periodic_timer) || ev == PROCESS_EVENT_POLL) {
 
-      LOG_INFO("DEBUG state=%u battery=%u low_battery=%u battery_dead=%u alarm_active=%u\n",
-         state, battery_level, low_battery_mode, battery_dead, alarm_active);
+      LOG_INFO("DEBUG state=%u battery=%u low_battery=%u battery_dead=%u alarm_active=%u\n", state, battery_level, low_battery_mode, battery_dead, alarm_active);
 
       if(state == STATE_INIT) {
         if(have_connectivity()) {
@@ -890,7 +873,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
       if(state == STATE_SUBSCRIBED) {
         uint8_t mqtt_publish_attempted = 0;
 
-        /* 1. FALL pending: massima priorità */
+        //FALL pending: massima priorità
         if(pending_fall_alarm) {
           fall_alarm_retry_counter++;
 
@@ -907,7 +890,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
           }
         }
 
-        /* 2. RESOLVED pending */
+        // RESOLVED pending
         if(!mqtt_publish_attempted && pending_alarm_resolved) {
           resolved_retry_counter++;
 
@@ -924,7 +907,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
           }
         }
 
-        /* 3. BATTERY pending */
+        //BATTERY pending
         if(!mqtt_publish_attempted && pending_battery_notify) {
           battery_notify_retry_counter++;
 
@@ -941,7 +924,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
           }
         }
 
-        /* 4. MQTT registration pending */
+        //MQTT registration pending
         if(!mqtt_publish_attempted && pending_mqtt_registration) {
           mqtt_registration_retry_counter++;
 
@@ -958,7 +941,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
           }
         }
 
-        /* 5. Heartbeat solo se non ho appena tentato altro */
+        //Heartbeat solo se non ho appena tentato altro
         if(!mqtt_publish_attempted) {
           publish_counter++;
 

@@ -174,7 +174,7 @@ static void start_alarm_blink(void) {
 }
 static void stop_alarm_blink(void) {
   alarm_pending = 0;
-  leds_single_off(LEDS_RED);
+  leds_off(LEDS_RED);
 }
 
 static void debug_patient_table(void) {
@@ -184,15 +184,7 @@ static void debug_patient_table(void) {
 
   for(i = 0; i < MAX_PATIENTS; i++) {
     if(patients[i].used) {
-      LOG_INFO("[%u] node_id=%s has_fall=%u is_critical=%u fall_seen=%u critical_seen=%u fall_order=%u critical_order=%u\n",
-               i,
-               patients[i].node_id,
-               patients[i].has_fall,
-               patients[i].is_critical,
-               patients[i].fall_seen,
-               patients[i].critical_seen,
-               patients[i].fall_order,
-               patients[i].critical_order);
+      LOG_INFO("[%u] node_id=%s has_fall=%u is_critical=%u fall_seen=%u critical_seen=%u fall_order=%u critical_order=%u\n", i, patients[i].node_id, patients[i].has_fall, patients[i].is_critical, patients[i].fall_seen, patients[i].critical_seen, patients[i].fall_order, patients[i].critical_order);
     }
   }
 
@@ -217,7 +209,7 @@ static uint8_t publish_mqtt_registration(void) {
   set_publish_period(CAREGIVER_DEFAULT_PUBLISH_INTERVAL/ CLOCK_SECOND);
   publish_counter = publish_every_n_ticks;
 
-  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"protocol\":\"mqtt\",\"event\":\"ONLINE\"}", client_id);
+  snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"event\":\"ONLINE\"}", client_id);
 
   publish_status = mqtt_publish(&conn, NULL, registration_topic, (uint8_t *)app_buffer, strlen(app_buffer), MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 
@@ -226,15 +218,13 @@ static uint8_t publish_mqtt_registration(void) {
     return 1;
   }
 
-  LOG_WARN("MQTT registration could not be queued on %s: status=%d\n",
-           registration_topic, publish_status);
+  LOG_WARN("MQTT registration could not be queued on %s: status=%d\n", registration_topic, publish_status);
   return 0;
 }
 
 //check if the node has network connectivity (global IPv6 address + default route)
 static bool have_connectivity(void) {
-  if(uip_ds6_get_global(ADDR_PREFERRED) == NULL ||
-     uip_ds6_defrt_choose() == NULL) {
+  if(uip_ds6_get_global(ADDR_PREFERRED) == NULL || uip_ds6_defrt_choose() == NULL) {
     return false;
   }
   return true;
@@ -443,20 +433,14 @@ static void mark_pending_event_seen(const char *node_id, uint8_t event_type) {
     return;
   }
 
+  //LOcal ack -> remove FALL notification from caregiver mem. Patient will stop local alarm after MQTT ack
   if(event_type == PATIENT_EVENT_FALL) {
-    /* Local acknowledgement: remove the FALL notification from caregiver memory.
-     * The patient will stop the local alarm after receiving the MQTT ACK.
-     * A later RESOLVED event is still handled idempotently.
-     */
     patient->has_fall = 0;
     patient->fall_seen = 0;
     patient->fall_order = 0;
 
   } else if(event_type == PATIENT_EVENT_NODE_CRITICAL) {
-    /* A critical node cannot be cleared by the caregiver button.
-     * The button only marks the notification as seen; the state remains critical
-     * until NODE_RECOVERED is received.
-     */
+    // A critical node cannot be cleared by the caregiver button. The button only marks the notification as seen; the state remains critical until NODE_RECOVERED is received.
     patient->critical_seen = 1;
     patient->critical_order = 0;
   }
@@ -538,20 +522,20 @@ static void handle_battery_depleted(void) {
 
   LOG_ERR("Battery depleted. Caregiver node is offline. Manual restart required: switch caregiver node OFF and ON.\n");
 
-  /* Stop alarm handling */
+  // Stop alarm handling 
   alarm_pending = 0;
   clear_patient_table();
 
-  /* Stop battery warning */
+  // Stop battery warning 
   low_battery_mode = 0;
   yellow_blink_active = 0;
   yellow_led_on = 0;
 
-  /* Switch off local indicators */
-  leds_single_off(LEDS_RED);
+  // Switch off local indicators 
+  leds_off(LEDS_RED);
   leds_single_off(LEDS_YELLOW);
 
-  /* Stop timers: the node is now logically OFF */
+  // Stop timers: the node is now logically OFF 
   etimer_stop(&periodic_timer);
   etimer_stop(&battery_timer);
   etimer_stop(&yellow_blink_timer);
@@ -786,14 +770,6 @@ PROCESS_THREAD(caregiver_process, ev, data)
 
   PROCESS_BEGIN();
 
-  //test led
-  leds_on(LEDS_RED);
-  clock_wait(CLOCK_SECOND * 3);
-  leds_off(LEDS_RED);
-  leds_on(LEDS_GREEN);
-  clock_wait(CLOCK_SECOND * 3);
-  leds_off(LEDS_GREEN);
-  leds_on(LEDS_BLUE);
   coap_activate_resource(&res_config, "config"); 
 
   // Client_id from MAC address 
@@ -838,7 +814,7 @@ PROCESS_THREAD(caregiver_process, ev, data)
     coap_init_message(request, COAP_TYPE_CON, COAP_POST, 0);
     coap_set_header_uri_path(request, REGISTRATION_PATH);
 
-    snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"caregiver\",\"protocol\":\"mqtt\"}", client_id);
+    snprintf(app_buffer, APP_BUFFER_SIZE, "{\"node_id\":\"%s\",\"type\":\"caregiver\"}", client_id);
 
     coap_set_payload(request, (uint8_t *)app_buffer, strlen(app_buffer));
 
@@ -951,7 +927,7 @@ PROCESS_THREAD(caregiver_process, ev, data)
     //red LED blinks when the alarm is active
     if(ev == PROCESS_EVENT_TIMER && data == &blink_timer) {
       if(alarm_pending) {
-        leds_single_toggle(LEDS_RED);
+        leds_toggle(LEDS_RED);
         printf("\xF0\x9F\x94\x94 ALARM\n");
       }
       etimer_reset(&blink_timer);
