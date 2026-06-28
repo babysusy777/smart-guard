@@ -668,8 +668,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
     COAP_BLOCKING_REQUEST(&server_ep, request, client_chunk_handler);
 
     if(!coap_registered) {
-      LOG_INFO("CoAP registration failed. Retrying in %u seconds...\n",
-               (unsigned int)(COAP_REG_RETRY_INTERVAL / CLOCK_SECOND));
+      LOG_INFO("CoAP registration failed. Retrying in %u seconds...\n", (unsigned int)(COAP_REG_RETRY_INTERVAL / CLOCK_SECOND));
 
       etimer_set(&periodic_timer, COAP_REG_RETRY_INTERVAL);
       PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&periodic_timer));
@@ -677,8 +676,7 @@ PROCESS_THREAD(patient_node_process, ev, data) {
   }
 
   if(!coap_registered) {
-    LOG_ERR("CoAP registration failed after %u attempts\n",
-            MAX_COAP_REG_ATTEMPTS);
+    LOG_ERR("CoAP registration failed after %u attempts\n", MAX_COAP_REG_ATTEMPTS);
 
     LOG_ERR("Unable to connect to the server: check your connection and switch patient node OFF and ON\n");
 

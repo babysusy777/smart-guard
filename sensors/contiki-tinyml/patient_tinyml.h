@@ -17,4 +17,4 @@ int tinyml_predict_window(
 
 float tinyml_get_last_score(void);
 
-#endif /* PATIENT_TINYML_H_ */
+#endif 

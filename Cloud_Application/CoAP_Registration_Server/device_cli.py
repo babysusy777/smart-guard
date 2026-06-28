@@ -107,9 +107,7 @@ class DeviceCLI:
                 return {
                     "node_id": record.values.get("node_id", "unknown"),
                     "type": record.values.get("type", "unknown"),
-                    "time": record.get_time().astimezone().strftime(
-                        "%d/%m/%Y %H:%M:%S"
-                    ),
+                    "time": record.get_time().astimezone().strftime("%d/%m/%Y %H:%M:%S"),
                 }
 
         return None
@@ -139,9 +137,7 @@ class DeviceCLI:
                     devices[node_id] = {
                         "node_id": node_id,
                         "type": record.values.get("type", "unknown"),
-                        "time": record.get_time().astimezone().strftime(
-                            "%d/%m/%Y %H:%M:%S"
-                        ),
+                        "time": record.get_time().astimezone().strftime("%d/%m/%Y %H:%M:%S"),
                     }
         names = self._get_all_patient_names()
 
@@ -322,8 +318,7 @@ class DeviceCLI:
                     active.append({
                         "node_id": node_id,
                         "nome":    names.get(node_id, "-"),
-                        "time":    record.get_time().astimezone().strftime("%d/%m/%Y %H:%M:%S"),
-                    })
+                        "time":    record.get_time().astimezone().strftime("%d/%m/%Y %H:%M:%S")})
  
         print()
         print("Allarmi attivi")
@@ -362,8 +357,7 @@ class DeviceCLI:
                     "node_id": node_id,
                     "nome":    names.get(node_id, "-"),
                     "event":   record.get_value(),
-                    "time":    record.get_time().astimezone().strftime("%d/%m/%Y %H:%M:%S"),
-                })
+                    "time":    record.get_time().astimezone().strftime("%d/%m/%Y %H:%M:%S")})
  
         print()
         print("Storico allarmi (ultimi 7 giorni, max 20 eventi)")

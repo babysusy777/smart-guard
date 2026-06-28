@@ -646,8 +646,8 @@ static void pub_handler(const char *topic, uint16_t topic_len, const uint8_t *ch
   if(chunk_contains(chunk, chunk_len, "\"event\":\"BATTERY_LOW\"")) {
     LOG_WARN("Patient node %s has low battery. Notification only, no ACK required.\n", node_id);
     // IMPORTANT:
-    // BATTERY_LOW is not pushed in the patient table. The caregiver does not need to press the button.
-    // No ACK is sent for this event.
+    // BATTERY_LOW is not pushed in the patient table. The caregiver does not need to press the button
+    // No ACK is sent for this event
      
     return;
   }
@@ -821,8 +821,7 @@ PROCESS_THREAD(caregiver_process, ev, data)
     COAP_BLOCKING_REQUEST(&server_ep, request, client_chunk_handler);
 
     if(!coap_registered) {
-      LOG_INFO("CoAP registration failed. Retrying in %u seconds...\n",
-               (unsigned int)(COAP_REG_RETRY_INTERVAL / CLOCK_SECOND));
+      LOG_INFO("CoAP registration failed. Retrying in %u seconds...\n", (unsigned int)(COAP_REG_RETRY_INTERVAL / CLOCK_SECOND));
 
       etimer_set(&periodic_timer, COAP_REG_RETRY_INTERVAL);
       PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&periodic_timer));
@@ -830,8 +829,7 @@ PROCESS_THREAD(caregiver_process, ev, data)
   }
 
   if(!coap_registered) {
-    LOG_ERR("CoAP registration failed after %u attempts\n",
-            MAX_COAP_REG_ATTEMPTS);
+    LOG_ERR("CoAP registration failed after %u attempts\n", MAX_COAP_REG_ATTEMPTS);
 
     LOG_ERR("Unable to connect to the server: check your connection and switch caregiver node OFF and ON\n");
 
@@ -878,8 +876,7 @@ PROCESS_THREAD(caregiver_process, ev, data)
       mark_pending_event_seen(confirmed_id, confirmed_event_type);
 
     } else if(confirmed_event_type == PATIENT_EVENT_NODE_CRITICAL) {
-      LOG_WARN("Caregiver has seen NODE_CRITICAL for %s. Patient remains critical until NODE_RECOVERED.\n",
-               confirmed_id);
+      LOG_WARN("Caregiver has seen NODE_CRITICAL for %s. Patient remains critical until NODE_RECOVERED.\n", confirmed_id);
 
       mark_pending_event_seen(confirmed_id, confirmed_event_type);
     }
@@ -953,9 +950,7 @@ PROCESS_THREAD(caregiver_process, ev, data)
         LOG_INFO("Connecting to MQTT broker\n");
         snprintf(broker_address, CONFIG_IP_ADDR_STR_LEN, "%s", broker_ip);
 
-        mqtt_connect(&conn, broker_address, DEFAULT_BROKER_PORT,
-                      (DEFAULT_PUBLISH_INTERVAL * 3) / CLOCK_SECOND,
-                      MQTT_CLEAN_SESSION_ON);
+        mqtt_connect(&conn, broker_address, DEFAULT_BROKER_PORT, (DEFAULT_PUBLISH_INTERVAL * 3) / CLOCK_SECOND, MQTT_CLEAN_SESSION_ON);
         state = STATE_CONNECTING;
       }
 
@@ -1038,16 +1033,13 @@ PROCESS_THREAD(caregiver_process, ev, data)
           if(have_connectivity()) {
             reconnect_attempts++;
 
-            LOG_INFO("MQTT reconnect attempt %u/%u\n",
-                     reconnect_attempts, MAX_TOTAL_RECONNECT_ATTEMPTS);
+            LOG_INFO("MQTT reconnect attempt %u/%u\n", reconnect_attempts, MAX_TOTAL_RECONNECT_ATTEMPTS);
 
             snprintf(broker_address, CONFIG_IP_ADDR_STR_LEN, "%s", broker_ip);
 
             connecting_ticks = 0;
 
-            mqtt_connect(&conn, broker_address, DEFAULT_BROKER_PORT,
-                         (DEFAULT_PUBLISH_INTERVAL * 3) / CLOCK_SECOND,
-                         MQTT_CLEAN_SESSION_ON);
+            mqtt_connect(&conn, broker_address, DEFAULT_BROKER_PORT, (DEFAULT_PUBLISH_INTERVAL * 3) / CLOCK_SECOND, MQTT_CLEAN_SESSION_ON);
 
             state = STATE_CONNECTING;
           } else {

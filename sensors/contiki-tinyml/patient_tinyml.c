@@ -21,9 +21,7 @@ static float square_magnitude(int16_t x, int16_t y, int16_t z) {
   return xf * xf + yf * yf + zf * zf;
 }
 
-static void calculate_signal_features(const float *signal,
-                                      uint8_t n,
-                                      float *features) {
+static void calculate_signal_features(const float *signal, uint8_t n, float *features) {
   uint8_t i;
 
   float sum = 0.0f;
@@ -86,9 +84,7 @@ static void calculate_signal_features(const float *signal,
   features[6] = maximum_absolute_difference;
 }
 
-static void extract_features(const patient_sample_t *window,
-                             uint8_t window_size,
-                             float *features) {
+static void extract_features(const patient_sample_t *window, uint8_t window_size, float *features) {
   uint8_t i;
 
   float adxl_magnitude[TINYML_WINDOW_SIZE];
@@ -161,11 +157,6 @@ static int argmax(const float *values, uint8_t n) {
 }
 
 static void suppress_emlearn_unused_warnings(void) {
-  /*
-   * In the classroom example, these symbols are referenced because some
-   * Contiki builds use -Werror and emlearn exposes static helper strings.
-   * This small reference avoids unused-symbol warnings without changing logic.
-   */
   volatile const void *p1 = (const void *)eml_error_str;
   volatile const void *p2 = (const void *)eml_net_activation_function_strs;
 
@@ -194,11 +185,11 @@ int tinyml_predict_window(const patient_sample_t *window,
     outputs[i] = 0.0f;
   }
 
-  /*
-   * Class order is fixed by train_fall_emlearn.py:
-   *   outputs[0] = NORMAL
-   *   outputs[1] = FALL
-   */
+
+
+  //  outputs[0] = NORMAL
+  // outputs[1] = FALL
+
   eml_net_predict_proba(
     &fall_model,
     features,
