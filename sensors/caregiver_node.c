@@ -100,7 +100,7 @@ static unsigned long publish_every_n_ticks = CAREGIVER_DEFAULT_PUBLISH_INTERVAL 
 static struct etimer battery_timer;
 static struct etimer yellow_blink_timer;
 
-static uint8_t battery_level = 50;
+static uint8_t battery_level = 30;
 
 static uint8_t battery_notified_20 = 0;
 static uint8_t battery_notified_10 = 0;
